@@ -1,0 +1,27 @@
+name: sync upstream
+
+on:
+  schedule:
+    # 每天 00:17 UTC（北京时间 08:17）。GitHub 会错峰，不保证准点。
+    - cron: "17 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream/main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/Autumn-27/ARTEX.git
+          git fetch upstream main
+          git merge --no-edit upstream/main
+          git push origin main
