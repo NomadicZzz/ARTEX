@@ -1384,3 +1384,136 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_batch
     ON notification_deliveries(batch_id) WHERE batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
     ON notification_deliveries(channel_id, id DESC);
+
+-- =====================================================================
+-- N. 漏洞情报与知识库
+-- 幂等。检索只用 PostgreSQL：GIN(products) + TSVECTOR + 可选 pg_trgm。
+-- =====================================================================
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS kb_sources (
+    id                BIGSERIAL PRIMARY KEY,
+    key               TEXT NOT NULL UNIQUE,
+    name              TEXT NOT NULL DEFAULT '',
+    kind              TEXT NOT NULL,
+    enabled           BOOLEAN NOT NULL DEFAULT true,
+    sync_interval_sec INTEGER NOT NULL DEFAULT 21600,
+    config            JSONB NOT NULL DEFAULT '{}',
+    cursor            TEXT NOT NULL DEFAULT '',
+    last_sync_at      TIMESTAMPTZ,
+    last_status       TEXT NOT NULL DEFAULT '',
+    last_error        TEXT NOT NULL DEFAULT '',
+    entry_count       INTEGER NOT NULL DEFAULT 0,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS trg_kb_sources_upd ON kb_sources;
+CREATE TRIGGER trg_kb_sources_upd BEFORE UPDATE ON kb_sources
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS kb_sync_runs (
+    id             BIGSERIAL PRIMARY KEY,
+    source_id      BIGINT NOT NULL REFERENCES kb_sources(id) ON DELETE CASCADE,
+    trigger_type   TEXT NOT NULL DEFAULT 'scheduled',
+    status         TEXT NOT NULL DEFAULT 'running',
+    fetched_count  INTEGER NOT NULL DEFAULT 0,
+    upserted_count INTEGER NOT NULL DEFAULT 0,
+    merged_count   INTEGER NOT NULL DEFAULT 0,
+    error          TEXT NOT NULL DEFAULT '',
+    started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_kb_sync_runs_source ON kb_sync_runs(source_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS kb_entries (
+    id                  BIGSERIAL PRIMARY KEY,
+    nkey                TEXT NOT NULL UNIQUE,
+    external_id         TEXT NOT NULL DEFAULT '',
+    aliases             TEXT[] NOT NULL DEFAULT '{}',
+    source_keys         TEXT[] NOT NULL DEFAULT '{}',
+    origin              TEXT NOT NULL DEFAULT 'synced',
+    kind                TEXT NOT NULL DEFAULT 'cve',
+    vulnclass           TEXT NOT NULL DEFAULT '',
+    severity            TEXT NOT NULL DEFAULT 'info',
+    cvss_score          NUMERIC(3,1),
+    cwe_id              TEXT NOT NULL DEFAULT '',
+    actively_exploited  BOOLEAN NOT NULL DEFAULT false,
+    products            TEXT[] NOT NULL DEFAULT '{}',
+    cpe_list            TEXT[] NOT NULL DEFAULT '{}',
+    affected_versions   TEXT NOT NULL DEFAULT '',
+    tags                TEXT[] NOT NULL DEFAULT '{}',
+    title               TEXT NOT NULL DEFAULT '',
+    summary             TEXT NOT NULL DEFAULT '',
+    detection_guide     TEXT NOT NULL DEFAULT '',
+    poc_snippet         TEXT NOT NULL DEFAULT '',
+    remediation         TEXT NOT NULL DEFAULT '',
+    "references"        JSONB NOT NULL DEFAULT '[]',
+    distilled           BOOLEAN NOT NULL DEFAULT false,
+    search_tsv          TSVECTOR,
+    content_hash        TEXT NOT NULL DEFAULT '',
+    content_locked      BOOLEAN NOT NULL DEFAULT false,
+    published_at        TIMESTAMPTZ,
+    enabled             BOOLEAN NOT NULL DEFAULT true,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_kb_entries_products ON kb_entries USING GIN(products);
+CREATE INDEX IF NOT EXISTS idx_kb_entries_aliases ON kb_entries USING GIN(aliases);
+CREATE INDEX IF NOT EXISTS idx_kb_entries_sources ON kb_entries USING GIN(source_keys);
+CREATE INDEX IF NOT EXISTS idx_kb_entries_tags ON kb_entries USING GIN(tags);
+CREATE INDEX IF NOT EXISTS idx_kb_entries_tsv ON kb_entries USING GIN(search_tsv);
+CREATE INDEX IF NOT EXISTS idx_kb_entries_external ON kb_entries(external_id) WHERE external_id <> '';
+CREATE INDEX IF NOT EXISTS idx_kb_entries_sev ON kb_entries(severity, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kb_entries_kev ON kb_entries(actively_exploited) WHERE actively_exploited;
+
+-- 旧库补列（CREATE TABLE IF NOT EXISTS 不会给已存在的表加新列）。
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS content_locked BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS distilled BOOLEAN NOT NULL DEFAULT false;
+
+CREATE OR REPLACE FUNCTION kb_entries_search_tsv() RETURNS trigger AS $$
+BEGIN
+    NEW.search_tsv :=
+        setweight(to_tsvector('simple', coalesce(NEW.external_id, '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(array_to_string(NEW.aliases, ' '), '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(NEW.title, '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(array_to_string(NEW.products, ' '), '')), 'B') ||
+        setweight(to_tsvector('simple', coalesce(array_to_string(NEW.tags, ' '), '')), 'B') ||
+        setweight(to_tsvector('simple', coalesce(NEW.summary, '')), 'C');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_kb_entries_tsv ON kb_entries;
+CREATE TRIGGER trg_kb_entries_tsv BEFORE INSERT OR UPDATE ON kb_entries
+    FOR EACH ROW EXECUTE FUNCTION kb_entries_search_tsv();
+DROP TRIGGER IF EXISTS trg_kb_entries_upd ON kb_entries;
+CREATE TRIGGER trg_kb_entries_upd BEFORE UPDATE ON kb_entries
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_kb_entries_title_trgm ON kb_entries USING GIN (title gin_trgm_ops)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_kb_entries_summary_trgm ON kb_entries USING GIN (summary gin_trgm_ops)';
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
+
+INSERT INTO kb_sources (key, name, kind, enabled, sync_interval_sec, config) VALUES
+    ('cisa_kev', 'CISA KEV 在野利用库', 'cisa_kev', true, 21600, '{}'::jsonb),
+    ('nuclei_templates', 'Nuclei 模板库', 'nuclei', true, 86400, '{"repo_url":"https://github.com/projectdiscovery/nuclei-templates"}'::jsonb),
+    ('nvd_cve', 'NVD CVE API 2.0', 'nvd', true, 21600, '{"min_severity":"high","since_days":120}'::jsonb),
+    ('github_ghsa', 'GitHub Security Advisories', 'ghsa', true, 21600, '{"min_severity":"high","since_days":120}'::jsonb),
+    ('aliyun_avd', '阿里云 AVD', 'avd', true, 43200, '{"feed_url":"https://avd.aliyun.com/high-risk/list","page_limit":3}'::jsonb),
+    ('seebug_rss', 'Seebug 安全公告', 'rss', true, 21600, '{"feed_url":"https://paper.seebug.org/rss/"}'::jsonb),
+    ('custom_git_kb', '自定义 Git 知识库', 'git_markdown', false, 86400, '{"repo_url":"","branch":"main","path":""}'::jsonb)
+ON CONFLICT (key) DO NOTHING;
+
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS kb_entry_ids JSONB NOT NULL DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_findings_kb_entry_ids ON findings USING GIN (kb_entry_ids jsonb_path_ops);

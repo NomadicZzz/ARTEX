@@ -60,6 +60,7 @@ type Server struct {
 	llmCfg    agent.Config // current LLM config (key not exposed)
 	llmOn     bool
 	llmProf   string // active LLM profile name (for llmrec tagging)
+	kbSync    *KBSyncer
 
 	// chatBusy guards the per-task main-agent run: the chat handler launches the
 	// agent on the server's background ctx (not the request ctx) and returns
@@ -228,6 +229,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		go s.evidenceStore().RunGC(s.ctx)
 		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		go newScheduler(s).Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+		s.kbSync = newKBSyncer(s)
+		agent.KBOnDemand = s.kbSync.FetchCVE
+		go s.kbSync.Run(s.ctx)
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
 		go newNotifier(s).Run(s.ctx)
@@ -760,6 +764,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/findings/export", s.findingsExport)
 	s.registerFindingTraffic(mux)
 	mux.HandleFunc("GET /api/exploration/findings/{id}", s.getFinding)
+	mux.HandleFunc("POST /api/findings/{id}/distill-kb", s.distillFindingKB)
 	mux.HandleFunc("GET /api/exploration/findings/{id}/lineage", s.findingLineage)
 	mux.HandleFunc("POST /api/exploration/findings/{id}/deepen", s.deepenFinding)
 	mux.HandleFunc("GET /api/exploration/findings/{id}/retests", s.listFindingRetests)
@@ -869,6 +874,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/mcp/{id}/tools", s.pgMCPTools)
 	mux.HandleFunc("POST /api/mcp/{id}/refresh", s.pgRefreshMCP)
 	// 资产同步 — ScopeSentry 数据源
+	mux.HandleFunc("GET /api/kb/stats", s.kbStats)
+	mux.HandleFunc("GET /api/kb/entries", s.kbSearch)
+	mux.HandleFunc("POST /api/kb/entries", s.kbCreateEntry)
+	mux.HandleFunc("GET /api/kb/entries/{id}", s.kbGetEntry)
+	mux.HandleFunc("PUT /api/kb/entries/{id}", s.kbUpdateEntry)
+	mux.HandleFunc("DELETE /api/kb/entries/{id}", s.kbDeleteEntry)
+	mux.HandleFunc("POST /api/kb/entries/{id}/distill", s.kbDistillEntry)
+	mux.HandleFunc("POST /api/kb/entries/{id}/create-verify-task", s.kbCreateVerifyTask)
+	mux.HandleFunc("POST /api/kb/import", s.kbImport)
+	mux.HandleFunc("GET /api/kb/sources", s.kbListSources)
+	mux.HandleFunc("POST /api/kb/sources", s.kbCreateSource)
+	mux.HandleFunc("PUT /api/kb/sources/{id}", s.kbUpdateSource)
+	mux.HandleFunc("DELETE /api/kb/sources/{id}", s.kbDeleteSource)
+	mux.HandleFunc("POST /api/kb/sources/{id}/sync", s.kbSyncSource)
+	mux.HandleFunc("GET /api/kb/sync-runs", s.kbListSyncRuns)
+
 	mux.HandleFunc("GET /api/sync/scopesentry/status", s.syncSSStatus)
 	mux.HandleFunc("POST /api/sync/scopesentry/datasource", s.syncSSDatasource)
 	mux.HandleFunc("GET /api/sync/scopesentry/projects", s.syncSSProjects)
@@ -2074,6 +2095,13 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 	}
 	assets := s.resolveAssetIDs(f.AssetIDs)
 	dto := findingFromDB(f, assets)
+	if rows, err := s.m.pg.ListKBEntriesByIDs(f.KBEntryIDs); err == nil {
+		for _, e := range rows {
+			dto.KBEntries = append(dto.KBEntries, FindingKBDTO{
+				ID: e.ID, ExternalID: e.ExternalID, Title: e.Title, Severity: e.Severity, Kind: e.Kind, HasPoC: e.HasPoC,
+			})
+		}
+	}
 	if contextTaskID := strings.TrimSpace(r.URL.Query().Get("context_task")); contextTaskID != "" {
 		contextTask := s.m.ResolveTask(contextTaskID)
 		if contextTask == nil {

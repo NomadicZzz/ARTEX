@@ -1054,6 +1054,134 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     };
   }
 
+  // ── knowledge base ──
+  if (path === "/kb/stats" && m === "GET") {
+    return { total: 2, kev: 1, methodology: 1, with_poc: 1, matched_entries: 1, matched_assets: 1 };
+  }
+  if (path === "/kb/entries" && m === "GET") {
+    const items = [
+      {
+        id: 1,
+        nkey: "cve:CVE-2021-44228",
+        external_id: "CVE-2021-44228",
+        origin: "synced",
+        kind: "cve",
+        vulnclass: "rce",
+        severity: "critical",
+        actively_exploited: true,
+        products: ["log4j"],
+        title: "Apache Log4j 远程代码执行",
+        summary: "公开在野利用线索。命中本身不是漏洞证据。",
+        enabled: true,
+        has_poc: true,
+        matched_asset_count: 1,
+      },
+      {
+        id: 2,
+        nkey: "method:upload-check",
+        external_id: "",
+        origin: "manual",
+        kind: "checklist",
+        vulnclass: "upload",
+        severity: "info",
+        actively_exploited: false,
+        products: [],
+        title: "文件上传检查清单",
+        summary: "授权测试时核对类型、路径和解析链。",
+        enabled: true,
+        has_poc: false,
+        matched_asset_count: 0,
+      },
+    ];
+    const qtext = (q.get("q") ?? "").toLowerCase();
+    const filtered = items.filter((item) => !qtext || `${item.title} ${item.external_id}`.toLowerCase().includes(qtext));
+    return { items: filtered, total: filtered.length };
+  }
+  if (seg[0] === "kb" && seg[1] === "entries" && seg[2] && m === "GET") {
+    return {
+      entry: {
+        id: Number(seg[2]),
+        nkey: "cve:CVE-2021-44228",
+        external_id: "CVE-2021-44228",
+        origin: "synced",
+        kind: "cve",
+        vulnclass: "rce",
+        severity: "critical",
+        actively_exploited: true,
+        products: ["log4j"],
+        title: "Apache Log4j 远程代码执行",
+        summary: "公开线索",
+        detection_guide: "对照版本后在授权目标上真实触发。命中不是证据。",
+        poc_snippet: "id: CVE-2021-44228",
+        enabled: true,
+        has_poc: true,
+        matched_asset_count: 1,
+      },
+      matched_assets: [{ asset_id: 11, type: "service", label: "https://app.example", matched_tech: ["log4j"] }],
+      related_findings: [],
+    };
+  }
+  if (path === "/kb/entries" && m === "POST") {
+    return { id: 9, title: String(b.title ?? "未命名"), nkey: "method:manual", origin: "manual", kind: "methodology" };
+  }
+  if (seg[0] === "kb" && seg[1] === "entries" && seg[3] === "distill" && m === "POST") {
+    return { id: Number(seg[2]), detection_guide: "演示：这是整理后的检测思路，不是利用步骤。", distilled: true };
+  }
+  if (seg[0] === "kb" && seg[1] === "entries" && seg[3] === "create-verify-task" && m === "POST") {
+    const ids = Array.isArray(b.asset_ids) ? b.asset_ids : [];
+    if (ids.length === 0) throw new Error("至少选择一个资产");
+    return { task_id: "9001", paused: true, message: "验证任务已创建并暂停。请到任务页确认后手动开始，系统不会自动发包。" };
+  }
+  if (path === "/kb/import" && m === "POST") return { imported: 1, ids: [9] };
+  if (path === "/kb/sources" && m === "POST") {
+    return {
+      id: 99,
+      key: String(b.key ?? "custom"),
+      name: String(b.name ?? "自定义源"),
+      kind: String(b.kind ?? "rss"),
+      enabled: b.enabled !== false,
+      sync_interval_sec: Number(b.sync_interval_sec ?? 86400),
+      config: (b.config as Record<string, unknown>) ?? {},
+      api_key_set: false,
+      cursor: "",
+      last_status: "",
+      last_error: "",
+      entry_count: 0,
+      builtin: false,
+    };
+  }
+  if (path === "/kb/sources" && m === "GET") {
+    return {
+      sources: [
+        {
+          id: 1,
+          key: "cisa_kev",
+          name: "CISA KEV 在野利用库",
+          kind: "cisa_kev",
+          enabled: true,
+          sync_interval_sec: 21600,
+          config: {},
+          api_key_set: false,
+          cursor: "",
+          last_status: "ok",
+          last_error: "",
+          entry_count: 1,
+          builtin: true,
+        },
+      ],
+    };
+  }
+  if (seg[0] === "kb" && seg[1] === "sources" && seg[3] === "sync" && m === "POST") return { status: "started" };
+  if (seg[0] === "kb" && seg[1] === "sources" && seg[2] && m === "PUT") return { id: Number(seg[2]), ...(b as object) };
+  if (seg[0] === "kb" && seg[1] === "sources" && seg[2] && m === "DELETE") return { ok: true };
+  if (path === "/kb/sync-runs" && m === "GET") return { runs: [] };
+  if (seg[0] === "findings" && seg[2] === "distill-kb" && m === "POST") {
+    return {
+      finding_id: Number(seg[1]),
+      entry: { id: 8, title: "由漏洞沉淀", nkey: `finding:${seg[1]}`, origin: "finding_distilled", kind: "methodology", severity: "high" },
+    };
+  }
+
   // ── auth：让 demo 直接进主界面 ──
   if (path === "/auth/status") return { initialized: true };
   if (path === "/auth/login" || path === "/auth/init") return { token: "mock-demo" };

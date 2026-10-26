@@ -37,6 +37,11 @@ import type {
   ExplorationNodeQuery,
   Finding,
   FindingAssetTree,
+  KBEntry,
+  KBEntryDetail,
+  KBSource,
+  KBStats,
+  KBSyncRun,
   FindingDeepenResponse,
   FindingGroupsPage,
   FindingQuery,
@@ -1313,4 +1318,57 @@ export const api = {
   // 202 即返回，实际下载在后台跑，进度走 /api/update/stream。
   applyUpdate: () => post<{ ok: boolean; target: string }>(`/update/apply`),
   rollbackUpdate: () => post<{ ok: boolean }>(`/update/rollback`),
+
+  // ---- knowledge base ----
+  kbStats: () => get<KBStats>("/kb/stats"),
+  kbEntries: (params?: {
+    q?: string;
+    products?: string;
+    min_severity?: string;
+    kind?: string;
+    actively_exploited?: boolean;
+    has_poc?: boolean;
+    matched_assets_only?: boolean;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params?.q) sp.set("q", params.q);
+    if (params?.products) sp.set("products", params.products);
+    if (params?.min_severity && params.min_severity !== "all") sp.set("min_severity", params.min_severity);
+    if (params?.kind && params.kind !== "all") sp.set("kind", params.kind);
+    if (params?.actively_exploited) sp.set("actively_exploited", "1");
+    if (params?.has_poc) sp.set("has_poc", "1");
+    if (params?.matched_assets_only) sp.set("matched_assets_only", "1");
+    sp.set("limit", String(params?.limit ?? 20));
+    sp.set("offset", String(params?.offset ?? 0));
+    return get<{ items: KBEntry[] | null; total: number }>(`/kb/entries?${sp}`);
+  },
+  kbEntry: (id: number) => get<KBEntryDetail>(`/kb/entries/${id}`),
+  kbCreateEntry: (body: Partial<KBEntry>) => post<KBEntry>("/kb/entries", body),
+  kbUpdateEntry: (id: number, body: Partial<KBEntry>) => put<KBEntry>(`/kb/entries/${id}`, body),
+  kbDeleteEntry: (id: number) => del<{ ok: boolean }>(`/kb/entries/${id}`),
+  kbDistillEntry: (id: number) => post<KBEntry>(`/kb/entries/${id}/distill`),
+  kbCreateVerifyTask: (id: number, assetIds: number[]) =>
+    post<{ task_id: string; paused: boolean; message: string }>(`/kb/entries/${id}/create-verify-task`, {
+      asset_ids: assetIds,
+    }),
+  kbImport: (body: { format?: string; content?: string; entries?: Partial<KBEntry>[] }) =>
+    post<{ imported: number; ids: number[] | null }>("/kb/import", body),
+  kbSources: () => get<{ sources: KBSource[] | null }>("/kb/sources"),
+  kbCreateSource: (body: {
+    key: string;
+    name: string;
+    kind: string;
+    enabled?: boolean;
+    sync_interval_sec?: number;
+    config?: Record<string, unknown>;
+  }) => post<KBSource>("/kb/sources", body),
+  kbUpdateSource: (id: number, body: Partial<KBSource> & { config?: Record<string, unknown> }) =>
+    put<KBSource>(`/kb/sources/${id}`, body),
+  kbDeleteSource: (id: number) => del<{ ok: boolean }>(`/kb/sources/${id}`),
+  kbSyncSource: (id: number) => post<{ status: string }>(`/kb/sources/${id}/sync`),
+  kbSyncRuns: (sourceId?: number) =>
+    get<{ runs: KBSyncRun[] | null }>(`/kb/sync-runs${sourceId ? `?source_id=${sourceId}` : ""}`),
+  distillFindingKB: (id: string) => post<{ entry: KBEntry; finding_id: number }>(`/findings/${id}/distill-kb`),
 };

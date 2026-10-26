@@ -73,6 +73,9 @@ func assetInputLabel(item assetInputItem) string {
 func (t *ToolSet) SetAssetStore(as *db.AssetStore, cs *db.CompanyStore) {
 	t.as = as
 	t.cs = cs
+	if as != nil {
+		t.pg = as.DB()
+	}
 }
 
 // assetInputItem is one element of the insert_assets "assets" array.
@@ -125,7 +128,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 		"批量登记新发现的资产，一次可混合多种类型（type 见枚举）。\n"+
 			"各类型必填字段：root_domain→domain；ip→ip（须为 IPv4/IPv6，非主机名）；subdomain→domain；app→app_name；service(HTTP)→url；service(非HTTP)→service_name+port（ip/domain 至少填一个）；endpoint→url+method。其余字段含义见各自说明。\n"+
 			"auth/technologies/params 为追加合并(append)，不覆盖原值。\n"+
-			"返回：{results:[{index,id,type}], errors:[{index,error}]}",
+			"返回：{results:[{index,id,type}], errors:[{index,error}]}。若新资产指纹命中知识库里的高危或在野利用条目，另附 kb_hints（检测线索，不是已确认漏洞；需真实触发后才能 report_finding）。没有命中时不返回该字段。",
 		obj(map[string]any{
 			// task_id 不暴露给模型：worker 归属哪个 task 由程序经 SetTaskID 权威赋值(见 handler)。
 			"assets": map[string]any{
@@ -226,6 +229,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 
 			var results []result
 			var errs []errEntry
+			var kbPrints []db.KBFingerprint
 
 			// 资产闸门规则一次性载入；读取失败则跳过判定（不阻断插入）。
 			// 拦截规则 = 全局 ∪ 任务级 block；允许规则 = 任务级 allow。
@@ -338,6 +342,9 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					continue
 				}
 				results = append(results, result{Index: i, ID: id, Type: typ})
+				if techs := assetItemTechs(item); len(techs) > 0 {
+					kbPrints = append(kbPrints, db.KBFingerprint{ID: id, Techs: techs})
+				}
 				t.writes.Assets++
 				t.anchorOwner(id)
 				if taskID > 0 {
@@ -365,10 +372,14 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				}
 			}
 
-			return jsonResult(map[string]any{
+			out := map[string]any{
 				"results": results,
 				"errors":  errs,
-			})
+			}
+			if hints := t.kbHints(kbPrints); len(hints) > 0 {
+				out["kb_hints"] = hints
+			}
+			return jsonResult(out)
 		},
 	)
 }
@@ -655,6 +666,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.searchAllWorkerTraces(), t.getWorkerTrace(),
 		// node_detail：worker 拿到 intent_id/节点 id 后可查该节点完整详情（配合上面的回看）。
 		t.nodeDetail(),
+		// 知识库只提供检测线索，不能代替 report_finding 的真实触发。
+		t.searchKnowledge(), t.getKnowledgeDetail(), t.matchAssetVulns(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，
 		// worker 只做单条意图的执行与写回）：list_facts / list_companies / list_worker_traces。
 	}
@@ -678,6 +691,7 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),
+		t.searchKnowledge(), t.getKnowledgeDetail(),
 	}
 }
 

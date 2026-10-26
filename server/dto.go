@@ -326,7 +326,18 @@ type FindingDTO struct {
 	SourceTaskID    string            `json:"source_task_id,omitempty"`
 	Inherited       bool              `json:"inherited,omitempty"`
 	Assets          []FindingAssetDTO `json:"assets,omitempty"`
+	KBEntries       []FindingKBDTO    `json:"kb_entries,omitempty"`
 	TS              string            `json:"ts"`
+}
+
+// FindingKBDTO is a knowledge entry cited by a finding.
+type FindingKBDTO struct {
+	ID         int64  `json:"id"`
+	ExternalID string `json:"external_id,omitempty"`
+	Title      string `json:"title"`
+	Severity   string `json:"severity"`
+	Kind       string `json:"kind"`
+	HasPoC     bool   `json:"has_poc"`
 }
 
 // FindingAssetDTO is one asset a finding is anchored to, pre-labelled for display.

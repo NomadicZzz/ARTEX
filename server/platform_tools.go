@@ -24,6 +24,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolCreateMCP(),
 		s.toolUpdateMCP(),
 		s.toolDeleteAssetsByHost(),
+		s.toolUpsertKnowledge(),
 	}
 }
 
@@ -33,6 +34,7 @@ var platformToolKeys = []string{
 	"create_custom_tool", "update_custom_tool",
 	"create_mcp", "update_mcp",
 	"delete_assets_by_host",
+	"upsert_knowledge",
 }
 
 // ---- assets ----
@@ -73,6 +75,42 @@ func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
 				"deleted":         total,
 				"deleted_by_type": counts,
 			})
+		})
+}
+
+func (s *Server) toolUpsertKnowledge() actool.CoreTool {
+	return wrTool("upsert_knowledge",
+		"把检测方法、检查清单或绕过经验写入知识库。默认只应给 Auto。写入的是线索和步骤，不是已确认漏洞；确认漏洞仍要在授权目标上真实触发后用 report_finding。",
+		objSchema(map[string]any{
+			"title":             strParam("标题"),
+			"summary":           strParam("摘要"),
+			"detection_guide":   strParam("授权检测时看什么、怎么对照"),
+			"kind":              strParam("methodology|checklist|poc|cve，默认 methodology"),
+			"severity":          strParam("info|low|medium|high|critical"),
+			"vulnclass":         strParam("漏洞类别"),
+			"external_id":       strParam("可选 CVE/GHSA/AVD 编号。有 CVE 时会并入对应漏洞条目"),
+			"products":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "相关产品"},
+			"poc_snippet":       strParam("可选的检测片段，不要写未授权的新利用链"),
+			"remediation":       strParam("修复建议"),
+			"affected_versions": strParam("受影响版本"),
+		}, "title"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			pg := s.m.PG()
+			if pg == nil {
+				return actool.Errorf("知识库未启用"), nil
+			}
+			var a db.KBEntry
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			a.Origin = "agent"
+			a.SourceKeys = []string{"agent"}
+			a.Enabled = true
+			row, merged, err := pg.UpsertAndMergeKBEntry(a)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return jsonResult(map[string]any{"id": row.ID, "nkey": row.NKey, "merged": merged, "note": "已写入知识库。这不是已确认漏洞。"})
 		})
 }
 

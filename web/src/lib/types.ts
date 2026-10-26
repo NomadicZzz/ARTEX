@@ -467,6 +467,101 @@ export interface TaskConstraint {
 }
 
 // ---- Findings ----
+export interface KBReference {
+  title?: string;
+  url: string;
+}
+
+export interface KBEntry {
+  id: number;
+  nkey: string;
+  external_id: string;
+  aliases?: string[];
+  source_keys?: string[];
+  origin: string;
+  kind: string;
+  vulnclass: string;
+  severity: string;
+  cvss_score?: number;
+  actively_exploited: boolean;
+  products: string[] | null;
+  affected_versions?: string;
+  tags?: string[];
+  title: string;
+  summary: string;
+  detection_guide?: string;
+  poc_snippet?: string;
+  remediation?: string;
+  references?: KBReference[] | null;
+  distilled?: boolean;
+  content_locked?: boolean;
+  published_at?: string;
+  enabled: boolean;
+  has_poc?: boolean;
+  matched_asset_count?: number;
+}
+
+export interface KBAssetHit {
+  asset_id: number;
+  type: string;
+  label: string;
+  matched_tech: string[] | null;
+}
+
+export interface KBFindingRef {
+  id: number;
+  name: string;
+  vulnclass: string;
+  severity: string;
+  summary: string;
+}
+
+export interface KBEntryDetail {
+  entry: KBEntry;
+  matched_assets: KBAssetHit[] | null;
+  related_findings: KBFindingRef[] | null;
+}
+
+export interface KBSource {
+  id: number;
+  key: string;
+  name: string;
+  kind: string;
+  enabled: boolean;
+  sync_interval_sec: number;
+  config: Record<string, unknown>;
+  api_key_set: boolean;
+  cursor: string;
+  last_sync_at?: string;
+  last_status: string;
+  last_error: string;
+  entry_count: number;
+  builtin: boolean;
+}
+
+export interface KBSyncRun {
+  id: number;
+  source_id: number;
+  source_key?: string;
+  trigger_type: string;
+  status: string;
+  fetched_count: number;
+  upserted_count: number;
+  merged_count: number;
+  error: string;
+  started_at: string;
+  finished_at?: string;
+}
+
+export interface KBStats {
+  total: number;
+  kev: number;
+  methodology: number;
+  with_poc: number;
+  matched_entries: number;
+  matched_assets: number;
+}
+
 export type Severity = "critical" | "high" | "medium" | "low";
 
 // 漏洞处置状态:待处理 / 处理中 / 已确认 / 已处理 / 已修复 / 误报 / 忽略 / 重复 / 风险接受。
@@ -509,7 +604,17 @@ export interface Finding {
   source_task_id?: string;
   inherited?: boolean;
   assets?: FindingAsset[];
+  kb_entries?: FindingKBEntry[];
   ts: string;
+}
+
+export interface FindingKBEntry {
+  id: number;
+  external_id?: string;
+  title: string;
+  severity: string;
+  kind: string;
+  has_poc: boolean;
 }
 
 // FindingsPage 是发现列表的服务端分页响应。

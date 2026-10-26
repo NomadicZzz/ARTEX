@@ -1,0 +1,253 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"regexp"
+	"strings"
+
+	"github.com/Autumn-27/artex/db"
+	actool "github.com/Autumn-27/norma/tool"
+)
+
+// KBOnDemand fetches a missing CVE into the knowledge base. The server wires it
+// so this package does not import the sync engine.
+var KBOnDemand func(ctx context.Context, cveID string) error
+
+var kbCVEPattern = regexp.MustCompile(`(?i)^CVE-\d{4}-\d{4,}$`)
+
+const kbClueNote = "知识库命中只是检测线索。必须在授权目标上真实触发并拿到证据后才能 report_finding，上报时可传 kb_entry_ids。"
+
+func (t *ToolSet) searchKnowledge() actool.CoreTool {
+	return readTool("search_knowledge",
+		"检索知识库：公开漏洞（CVE/KEV/GHSA/AVD/Nuclei）和检测方法/检查清单。"+kbClueNote,
+		obj(map[string]any{
+			"q":                  str("关键词、CVE 编号或产品名"),
+			"products":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "产品指纹，命中其一即可"},
+			"vulnclass":          str("漏洞类别，精确匹配"),
+			"min_severity":       str("info|low|medium|high|critical"),
+			"kind":               str("cve|poc|methodology|checklist"),
+			"actively_exploited": map[string]any{"type": "boolean", "description": "只看在野利用"},
+			"has_poc":            map[string]any{"type": "boolean", "description": "只看带 PoC 片段的条目"},
+			"limit":              intp("默认 10，最大 30"),
+		}),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.pg == nil {
+				return actool.Errorf("知识库未启用"), nil
+			}
+			var a struct {
+				Q                 string   `json:"q"`
+				Products          []string `json:"products"`
+				VulnClass         string   `json:"vulnclass"`
+				MinSeverity       string   `json:"min_severity"`
+				Kind              string   `json:"kind"`
+				ActivelyExploited *bool    `json:"actively_exploited"`
+				HasPoC            *bool    `json:"has_poc"`
+				Limit             int      `json:"limit"`
+			}
+			_ = json.Unmarshal(in, &a)
+			limit := a.Limit
+			if limit <= 0 {
+				limit = 10
+			}
+			if limit > 30 {
+				limit = 30
+			}
+			q := db.KBQuery{
+				Q: a.Q, Products: a.Products, VulnClass: a.VulnClass, MinSeverity: a.MinSeverity,
+				Kind: a.Kind, ActivelyExploited: a.ActivelyExploited, HasPoC: a.HasPoC, Limit: limit,
+			}
+			entries, total, err := t.pg.SearchKBEntries(q)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if total == 0 && kbCVEPattern.MatchString(strings.TrimSpace(a.Q)) && KBOnDemand != nil {
+				_ = KBOnDemand(ctx, strings.ToUpper(strings.TrimSpace(a.Q)))
+				entries, total, err = t.pg.SearchKBEntries(q)
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+			}
+			return jsonResult(map[string]any{
+				"total":   total,
+				"entries": kbListBriefs(entries),
+				"note":    kbClueNote,
+			})
+		})
+}
+
+func (t *ToolSet) getKnowledgeDetail() actool.CoreTool {
+	return readTool("get_knowledge_detail",
+		"读取知识库条目全文（检测思路与 PoC 片段）。一次最多 5 条。"+kbClueNote,
+		obj(map[string]any{
+			"ids":         map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "条目 id，最多 5 个"},
+			"id":          idp("单个条目 id"),
+			"external_id": str("CVE/GHSA/AVD 编号。库里没有的 CVE 会尝试按需拉取"),
+		}),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.pg == nil {
+				return actool.Errorf("知识库未启用"), nil
+			}
+			var a struct {
+				IDs        []json.RawMessage `json:"ids"`
+				ID         json.RawMessage   `json:"id"`
+				ExternalID string            `json:"external_id"`
+			}
+			_ = json.Unmarshal(in, &a)
+			ids := pidList(a.IDs)
+			if v := pid(a.ID); v > 0 {
+				ids = append(ids, v)
+			}
+			var omitted []int64
+			if len(ids) > 5 {
+				omitted = ids[5:]
+				ids = ids[:5]
+			}
+			var entries []db.KBEntry
+			if len(ids) > 0 {
+				rows, err := t.pg.ListKBEntriesByIDs(ids)
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				entries = rows
+			}
+			ext := strings.TrimSpace(a.ExternalID)
+			if ext != "" {
+				row, err := t.lookupKBExternal(ctx, ext)
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				if row != nil {
+					entries = append(entries, *row)
+				}
+			}
+			if len(entries) == 0 {
+				return jsonResult(map[string]any{"entries": []any{}, "omitted_ids": omitted, "note": kbClueNote})
+			}
+			return jsonResult(map[string]any{"entries": entries, "omitted_ids": omitted, "note": kbClueNote})
+		})
+}
+
+func (t *ToolSet) lookupKBExternal(ctx context.Context, ext string) (*db.KBEntry, error) {
+	row, err := t.pg.GetKBEntryByExternalID(ext)
+	if err != nil || row != nil || KBOnDemand == nil || !kbCVEPattern.MatchString(ext) {
+		return row, err
+	}
+	if err := KBOnDemand(ctx, strings.ToUpper(ext)); err != nil {
+		return nil, nil
+	}
+	return t.pg.GetKBEntryByExternalID(ext)
+}
+
+func (t *ToolSet) matchAssetVulns() actool.CoreTool {
+	return readTool("match_asset_vulns",
+		"用资产指纹碰撞知识库，只返回高危/严重或在野利用条目。"+kbClueNote,
+		obj(map[string]any{
+			"asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "资产 id"},
+			"products":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "技术栈/产品名"},
+			"limit":     intp("每个资产返回的条目数，默认 3"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.pg == nil {
+				return actool.Errorf("知识库未启用"), nil
+			}
+			var a struct {
+				AssetIDs []json.RawMessage `json:"asset_ids"`
+				Products []string          `json:"products"`
+				Limit    int               `json:"limit"`
+			}
+			_ = json.Unmarshal(in, &a)
+			limit := a.Limit
+			if limit <= 0 {
+				limit = 3
+			}
+			var fps []db.KBFingerprint
+			if ids := pidList(a.AssetIDs); len(ids) > 0 {
+				if t.as == nil {
+					return actool.Errorf("资产库未启用"), nil
+				}
+				assets, err := t.as.GetByIDs(ids)
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				for _, asset := range assets {
+					techs := append([]string{}, asset.Technologies...)
+					if asset.ServiceName != "" {
+						techs = append(techs, asset.ServiceName)
+					}
+					if asset.AppName != "" {
+						techs = append(techs, asset.AppName)
+					}
+					fps = append(fps, db.KBFingerprint{ID: asset.ID, Techs: techs})
+				}
+			}
+			if len(a.Products) > 0 {
+				fps = append(fps, db.KBFingerprint{ID: 0, Techs: a.Products})
+			}
+			if len(fps) == 0 {
+				return jsonResult(map[string]any{"matches": []any{}, "note": kbClueNote})
+			}
+			matches, err := t.pg.MatchAssetsAgainstKB(fps, limit)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return jsonResult(map[string]any{"matches": kbMatchBriefs(matches), "note": kbClueNote})
+		})
+}
+
+func kbListBriefs(entries []db.KBEntry) []map[string]any {
+	out := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, map[string]any{
+			"id": e.ID, "external_id": e.ExternalID, "title": e.Title, "severity": e.Severity,
+			"kind": e.Kind, "actively_exploited": e.ActivelyExploited, "has_poc": e.HasPoC,
+			"products": e.Products, "summary": e.Summary,
+		})
+	}
+	return out
+}
+
+func kbMatchBriefs(matches []db.KBAssetMatch) []map[string]any {
+	out := make([]map[string]any, 0, len(matches))
+	for _, m := range matches {
+		tops := make([]map[string]any, 0, len(m.TopEntries))
+		for _, e := range m.TopEntries {
+			tops = append(tops, map[string]any{
+				"id": e.ID, "external_id": e.ExternalID, "title": e.Title,
+				"severity": e.Severity, "has_poc": e.HasPoC, "actively_exploited": e.ActivelyExploited,
+			})
+		}
+		out = append(out, map[string]any{
+			"asset_id": m.AssetID, "matched_tech": m.MatchedTech,
+			"high_vuln_count": m.HighVulnCount, "top_entries": tops,
+		})
+	}
+	return out
+}
+
+func assetItemTechs(item assetInputItem) []string {
+	var techs []string
+	techs = append(techs, item.Technologies...)
+	if item.ServiceName != "" {
+		techs = append(techs, item.ServiceName)
+	}
+	if item.AppName != "" {
+		techs = append(techs, item.AppName)
+	}
+	return techs
+}
+
+func (t *ToolSet) kbHints(fps []db.KBFingerprint) []map[string]any {
+	if t.pg == nil || len(fps) == 0 {
+		return nil
+	}
+	matches, err := t.pg.MatchAssetsAgainstKB(fps, 3)
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	briefs := kbMatchBriefs(matches)
+	for _, item := range briefs {
+		item["tip"] = "可用 get_knowledge_detail / match_asset_vulns 查看检测思路。" + kbClueNote
+	}
+	return briefs
+}

@@ -61,6 +61,7 @@ function FindingDetailInner() {
   const [finding, setFinding] = React.useState<Finding | null>(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
+  const [distilling, setDistilling] = React.useState(false);
 
   const load = React.useCallback(() => {
     if (!id) {
@@ -172,7 +173,29 @@ function FindingDetailInner() {
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{finding.summary || "（无摘要）"}</p>
                 </CardContent>
               </Card>
-              <FindingRetestPanel key={id} findingId={id} readOnly={finding.inherited} onCompleted={load} />
+              <FindingRetestPanel key={`retest-${id}`} findingId={id} readOnly={finding.inherited} onCompleted={load} />
+              {finding.kb_entries && finding.kb_entries.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">关联知识库</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {finding.kb_entries.map((entry) => (
+                      <Link
+                        key={entry.id}
+                        href={`/function/knowledge?entry=${entry.id}`}
+                        className="block rounded-md border px-3 py-2 text-sm hover:bg-muted"
+                      >
+                        <span className="font-medium">{entry.title}</span>
+                        <span className="ml-2 text-muted-foreground">
+                          {entry.external_id || entry.kind} · {entry.severity}
+                        </span>
+                      </Link>
+                    ))}
+                    <p className="text-muted-foreground text-xs">知识库命中只是检测线索，不能代替本漏洞的真实证据。</p>
+                  </CardContent>
+                </Card>
+              )}
               <Card>
                 <CardHeader>
                   <CardTitle className="text-sm">证据 / PoC</CardTitle>
@@ -188,7 +211,7 @@ function FindingDetailInner() {
                 </CardContent>
               </Card>
               <FindingTrafficPanel
-                key={id}
+                key={`traffic-${id}`}
                 findingId={id}
                 contextTask={contextTaskId || undefined}
                 readOnly={finding.inherited}
@@ -320,6 +343,31 @@ function FindingDetailInner() {
                 <FieldRow label="发现时间">
                   <span className="tabular-nums">{fmtTime(finding.ts)}</span>
                 </FieldRow>
+                {!finding.inherited && (
+                  <div className="pt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      disabled={distilling}
+                      onClick={async () => {
+                        setDistilling(true);
+                        try {
+                          const res = await api.distillFindingKB(id);
+                          toast.success(`已沉淀：${res.entry.title || "知识条目"}`);
+                          load();
+                        } catch (e) {
+                          toast.error("沉淀失败：" + (e as Error).message);
+                        } finally {
+                          setDistilling(false);
+                        }
+                      }}
+                    >
+                      {distilling ? "沉淀中…" : "沉淀至知识库"}
+                    </Button>
+                    <p className="mt-2 text-xs text-muted-foreground">先脱敏再整理成检测线索，不会把它当成新的漏洞。</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
