@@ -50,15 +50,15 @@ func TestMergeKBEntryPromotesCVEAndKeepsLockedProse(t *testing.T) {
 
 func TestPrepareKBEntryStripsNUL(t *testing.T) {
 	got, err := prepareKBEntry(KBEntry{
-		Title:       "模板\x00名称",
-		Summary:     "摘要\x00",
-		PocSnippet:  "id: x\x00\xffbody",
-		Origin:      "synced",
-		Kind:        "poc",
-		Severity:    "high",
-		Products:    []string{"prod\x00uct"},
-		Tags:        []string{"tag\x00"},
-		References:  []KBReference{{Title: "链接\x00", URL: "https://example.com/\x00a"}},
+		Title:      "模板\x00名称",
+		Summary:    "摘要\x00",
+		PocSnippet: "id: x\x00\xffbody",
+		Origin:     "synced",
+		Kind:       "poc",
+		Severity:   "high",
+		Products:   []string{"prod\x00uct"},
+		Tags:       []string{"tag\x00"},
+		References: []KBReference{{Title: "链接\x00", URL: "https://example.com/\x00a"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +74,39 @@ func TestPrepareKBEntryStripsNUL(t *testing.T) {
 	}
 	if strings.Contains(kbRefsJSON(got.References), "\\u0000") {
 		t.Fatalf("jsonb still has NUL escape: %s", kbRefsJSON(got.References))
+	}
+}
+
+func TestNormalizeTagsOnPrepareAndMerge(t *testing.T) {
+	got, err := prepareKBEntry(KBEntry{
+		Title: "标签归一", Origin: "synced", Kind: "cve", Severity: "high",
+		ExternalID: "CVE-2021-44228",
+		Products:   []string{"Apache Log4j", "log4j"},
+		Tags:       []string{"RCE", " rce ", " Log4j ", "ecology", "  "},
+		CPE:        []string{"cpe:2.3:a:Apache:Log4j"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Tags, ",") != "rce,log4j,ecology" {
+		t.Fatalf("tags = %#v", got.Tags)
+	}
+	if len(got.Products) != 1 || got.Products[0] != "log4j" {
+		t.Fatalf("products = %#v", got.Products)
+	}
+	if len(got.CPE) != 1 || got.CPE[0] != "cpe:2.3:a:Apache:Log4j" {
+		t.Fatalf("cpe = %#v", got.CPE)
+	}
+
+	merged := MergeKBEntry(
+		KBEntry{Tags: []string{"RCE"}, Products: []string{"Apache Log4j"}, Title: "已有", Origin: "synced", Kind: "cve"},
+		KBEntry{Tags: []string{"rce", " Log4j "}, Products: []string{"log4j"}},
+	)
+	if strings.Join(merged.Tags, ",") != "rce,log4j" {
+		t.Fatalf("merged tags = %#v", merged.Tags)
+	}
+	if len(merged.Products) != 1 || merged.Products[0] != "log4j" {
+		t.Fatalf("merged products = %#v", merged.Products)
 	}
 }
 

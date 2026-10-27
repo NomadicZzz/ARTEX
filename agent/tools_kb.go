@@ -18,6 +18,10 @@ var kbCVEPattern = regexp.MustCompile(`(?i)^CVE-\d{4}-\d{4,}$`)
 
 const kbClueNote = "知识库命中只是检测线索。必须在授权目标上真实触发并拿到证据后才能 report_finding，上报时可传 kb_entry_ids。"
 
+const kbDetailIDCap = 5
+
+const kbDetailLimitNote = "单次最多返回 5 条详情，剩余 ID 请分批调用"
+
 func (t *ToolSet) searchKnowledge() actool.CoreTool {
 	return readTool("search_knowledge",
 		"检索知识库：公开漏洞（CVE/KEV/GHSA/AVD/Nuclei）和检测方法/检查清单。"+kbClueNote,
@@ -78,11 +82,11 @@ func (t *ToolSet) searchKnowledge() actool.CoreTool {
 
 func (t *ToolSet) getKnowledgeDetail() actool.CoreTool {
 	return readTool("get_knowledge_detail",
-		"读取知识库条目全文（检测思路与 PoC 片段）。一次最多 5 条。"+kbClueNote,
+		"读取知识库条目全文（检测思路与 PoC 片段）。按 id 最多 5 条，external_id 另计。"+kbClueNote,
 		obj(map[string]any{
-			"ids":         map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "条目 id，最多 5 个"},
+			"ids":         map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "条目 id。按 id 最多 5 个，其余在 omitted_ids 里，external_id 另计"},
 			"id":          idp("单个条目 id"),
-			"external_id": str("CVE/GHSA/AVD 编号。库里没有的 CVE 会尝试按需拉取"),
+			"external_id": str("CVE/GHSA/AVD 编号。库里没有的 CVE 会尝试按需拉取。不占 id 的 5 条名额"),
 		}),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.pg == nil {
@@ -98,11 +102,7 @@ func (t *ToolSet) getKnowledgeDetail() actool.CoreTool {
 			if v := pid(a.ID); v > 0 {
 				ids = append(ids, v)
 			}
-			var omitted []int64
-			if len(ids) > 5 {
-				omitted = ids[5:]
-				ids = ids[:5]
-			}
+			ids, omitted := splitKBDetailIDs(ids)
 			var entries []db.KBEntry
 			if len(ids) > 0 {
 				rows, err := t.pg.ListKBEntriesByIDs(ids)
@@ -121,11 +121,32 @@ func (t *ToolSet) getKnowledgeDetail() actool.CoreTool {
 					entries = append(entries, *row)
 				}
 			}
-			if len(entries) == 0 {
-				return jsonResult(map[string]any{"entries": []any{}, "omitted_ids": omitted, "note": kbClueNote})
-			}
-			return jsonResult(map[string]any{"entries": entries, "omitted_ids": omitted, "note": kbClueNote})
+			return jsonResult(kbDetailPayload(entries, omitted))
 		})
+}
+
+// splitKBDetailIDs keeps the first 5 ids. external_id is a separate lookup and does not use a slot.
+func splitKBDetailIDs(ids []int64) (kept, omitted []int64) {
+	if len(ids) <= kbDetailIDCap {
+		return ids, nil
+	}
+	return ids[:kbDetailIDCap], ids[kbDetailIDCap:]
+}
+
+func kbDetailPayload(entries []db.KBEntry, omitted []int64) map[string]any {
+	var listed any = entries
+	if len(entries) == 0 {
+		listed = []any{}
+	}
+	out := map[string]any{
+		"entries":     listed,
+		"omitted_ids": omitted,
+		"note":        kbClueNote,
+	}
+	if len(omitted) > 0 {
+		out["limit_note"] = kbDetailLimitNote
+	}
+	return out
 }
 
 func (t *ToolSet) lookupKBExternal(ctx context.Context, ext string) (*db.KBEntry, error) {

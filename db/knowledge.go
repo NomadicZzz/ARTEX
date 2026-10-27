@@ -248,6 +248,25 @@ func truncateRunes(s string, n int) string {
 	return string(rs[:n])
 }
 
+// normalizeTags trims, lowercases, and dedupes tags in first-seen order.
+// Product aliases stay off this path: a tag such as "ecology" is not a product token.
+func normalizeTags(items []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, s := range items {
+		s = strings.ToLower(strings.TrimSpace(utf8Clean(s)))
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
 func unionStrings(a, b []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -322,7 +341,7 @@ func MergeKBEntry(existing, incoming KBEntry) KBEntry {
 	promoteCVEIdentity(&out, existing, incoming)
 	out.Products = NormalizeProducts(append(append([]string{}, existing.Products...), incoming.Products...))
 	out.CPE = unionStrings(existing.CPE, incoming.CPE)
-	out.Tags = unionStrings(existing.Tags, incoming.Tags)
+	out.Tags = normalizeTags(append(append([]string{}, existing.Tags...), incoming.Tags...))
 	out.References = unionRefs(existing.References, incoming.References)
 	out.ActivelyExploited = existing.ActivelyExploited || incoming.ActivelyExploited
 	if incoming.PublishedAt != nil && (existing.PublishedAt == nil || incoming.PublishedAt.Before(*existing.PublishedAt)) {
@@ -442,7 +461,7 @@ func prepareKBEntry(in KBEntry) (KBEntry, error) {
 	in.Products = NormalizeProducts(in.Products)
 	in.Aliases = unionStrings(nil, in.Aliases)
 	in.SourceKeys = unionStrings(nil, in.SourceKeys)
-	in.Tags = unionStrings(nil, in.Tags)
+	in.Tags = normalizeTags(in.Tags)
 	in.CPE = unionStrings(nil, in.CPE)
 	if in.References == nil {
 		in.References = []KBReference{}
