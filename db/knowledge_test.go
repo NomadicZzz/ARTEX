@@ -1,6 +1,10 @@
 package db
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestMergeKBEntryPromotesCVEAndKeepsLockedProse(t *testing.T) {
 	existing := KBEntry{
@@ -41,6 +45,35 @@ func TestMergeKBEntryPromotesCVEAndKeepsLockedProse(t *testing.T) {
 	}
 	if !folded.ActivelyExploited || folded.NKey != "cve:CVE-2024-1000" {
 		t.Fatalf("locked row dropped identity/kev: %+v", folded)
+	}
+}
+
+func TestPrepareKBEntryStripsNUL(t *testing.T) {
+	got, err := prepareKBEntry(KBEntry{
+		Title:       "模板\x00名称",
+		Summary:     "摘要\x00",
+		PocSnippet:  "id: x\x00\xffbody",
+		Origin:      "synced",
+		Kind:        "poc",
+		Severity:    "high",
+		Products:    []string{"prod\x00uct"},
+		Tags:        []string{"tag\x00"},
+		References:  []KBReference{{Title: "链接\x00", URL: "https://example.com/\x00a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := []string{got.Title, got.Summary, got.PocSnippet, got.Products[0], got.Tags[0], got.References[0].Title, got.References[0].URL, got.NKey}
+	for _, s := range fields {
+		if strings.IndexByte(s, 0) >= 0 || !utf8.ValidString(s) {
+			t.Fatalf("unsafe for postgres text: %q", s)
+		}
+	}
+	if got.Title != "模板名称" || got.Products[0] != "product" {
+		t.Fatalf("NUL was not removed: %+v", got)
+	}
+	if strings.Contains(kbRefsJSON(got.References), "\\u0000") {
+		t.Fatalf("jsonb still has NUL escape: %s", kbRefsJSON(got.References))
 	}
 }
 

@@ -936,7 +936,7 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
               <SelectTrigger size="sm" className="h-8 w-40">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent position="popper">
+              <SelectContent>
                 <SelectItem value="serial">串行（排队，一次一个）</SelectItem>
                 <SelectItem value="parallel">并行（各自并发会话）</SelectItem>
               </SelectContent>
@@ -957,7 +957,7 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
               <SelectTrigger size="sm" className="h-8 w-44">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent position="popper">
+              <SelectContent>
                 <SelectItem value="by_task">按任务合并</SelectItem>
                 <SelectItem value="all">全部合并成一条</SelectItem>
                 <SelectItem value="none">不合并</SelectItem>

@@ -211,7 +211,9 @@ func syncNuclei(ctx context.Context, c *Client, src db.KBSource, emit func(Draft
 			continue
 		}
 		if err := emit(d); err != nil {
-			return sha, err
+			// Keep the previous cursor. A failed run must be retried; storing the
+			// new commit SHA would make the next sync skip the zip entirely.
+			return src.Cursor, err
 		}
 	}
 	if sha == "" {

@@ -354,7 +354,59 @@ func MergeKBEntry(existing, incoming KBEntry) KBEntry {
 	return out
 }
 
+// sanitizeKBEntry drops bytes PostgreSQL text and jsonb refuse. Nuclei templates
+// embed payloads that decode to NUL (0x00). That byte is valid UTF-8, but a text
+// column rejects it with SQLSTATE 22021, and jsonb rejects the \u0000 escape.
+func sanitizeKBEntry(in KBEntry) KBEntry {
+	in.NKey = utf8Clean(in.NKey)
+	in.ExternalID = utf8Clean(in.ExternalID)
+	in.Origin = utf8Clean(in.Origin)
+	in.Kind = utf8Clean(in.Kind)
+	in.VulnClass = utf8Clean(in.VulnClass)
+	in.Severity = utf8Clean(in.Severity)
+	in.CWE = utf8Clean(in.CWE)
+	in.AffectedVersions = utf8Clean(in.AffectedVersions)
+	in.Title = utf8Clean(in.Title)
+	in.Summary = utf8Clean(in.Summary)
+	in.DetectionGuide = utf8Clean(in.DetectionGuide)
+	in.PocSnippet = utf8Clean(in.PocSnippet)
+	in.Remediation = utf8Clean(in.Remediation)
+	in.Aliases = sanitizeStrings(in.Aliases)
+	in.SourceKeys = sanitizeStrings(in.SourceKeys)
+	in.Products = sanitizeStrings(in.Products)
+	in.CPE = sanitizeStrings(in.CPE)
+	in.Tags = sanitizeStrings(in.Tags)
+	for i := range in.References {
+		in.References[i].Title = utf8Clean(in.References[i].Title)
+		in.References[i].URL = utf8Clean(in.References[i].URL)
+	}
+	return in
+}
+
+func sanitizeStrings(items []string) []string {
+	if len(items) == 0 {
+		return items
+	}
+	out := make([]string, len(items))
+	for i, s := range items {
+		out[i] = utf8Clean(s)
+	}
+	return out
+}
+
+func kbRefsJSON(refs []KBReference) string {
+	if refs == nil {
+		refs = []KBReference{}
+	}
+	raw, err := json.Marshal(refs)
+	if err != nil {
+		return "[]"
+	}
+	return string(jsonbClean(raw))
+}
+
 func prepareKBEntry(in KBEntry) (KBEntry, error) {
+	in = sanitizeKBEntry(in)
 	in.Title = truncateRunes(strings.TrimSpace(in.Title), 500)
 	in.Summary = truncateRunes(strings.TrimSpace(in.Summary), 4000)
 	in.DetectionGuide = truncateRunes(in.DetectionGuide, 20000)
@@ -598,7 +650,7 @@ func findKBForMerge(tx *sql.Tx, in KBEntry) (KBEntry, bool, error) {
 }
 
 func insertKBEntry(tx *sql.Tx, e KBEntry) (int64, error) {
-	refs, _ := json.Marshal(e.References)
+	refs := kbRefsJSON(e.References)
 	var published any
 	if e.PublishedAt != nil {
 		published = *e.PublishedAt
@@ -616,13 +668,13 @@ func insertKBEntry(tx *sql.Tx, e KBEntry) (int64, error) {
 		RETURNING id`,
 		e.NKey, e.ExternalID, pgTextArray(e.Aliases), pgTextArray(e.SourceKeys), e.Origin, e.Kind, e.VulnClass, e.Severity, cvss, e.CWE,
 		e.ActivelyExploited, pgTextArray(e.Products), pgTextArray(e.CPE), e.AffectedVersions, pgTextArray(e.Tags),
-		e.Title, e.Summary, e.DetectionGuide, e.PocSnippet, e.Remediation, string(refs), e.Distilled, e.ContentHash, e.ContentLocked || kbOriginLocked(e.Origin), published,
+		e.Title, e.Summary, e.DetectionGuide, e.PocSnippet, e.Remediation, refs, e.Distilled, e.ContentHash, e.ContentLocked || kbOriginLocked(e.Origin), published,
 	).Scan(&id)
 	return id, err
 }
 
 func updateKBEntry(tx *sql.Tx, e KBEntry) error {
-	refs, _ := json.Marshal(e.References)
+	refs := kbRefsJSON(e.References)
 	var published any
 	if e.PublishedAt != nil {
 		published = *e.PublishedAt
@@ -640,7 +692,7 @@ func updateKBEntry(tx *sql.Tx, e KBEntry) error {
 		e.NKey, e.ExternalID, pgTextArray(e.Aliases), pgTextArray(e.SourceKeys), e.Kind, e.VulnClass, e.Severity,
 		cvss, e.CWE, e.ActivelyExploited, pgTextArray(e.Products), pgTextArray(e.CPE),
 		e.AffectedVersions, pgTextArray(e.Tags), e.Title, e.Summary, e.DetectionGuide, e.PocSnippet,
-		e.Remediation, string(refs), e.Distilled, e.ContentHash, published, e.ID)
+		e.Remediation, refs, e.Distilled, e.ContentHash, published, e.ID)
 	return err
 }
 
@@ -686,7 +738,7 @@ func (d *DB) UpdateKBEntryContent(id int64, in KBEntry) (KBEntry, error) {
 		return KBEntry{}, err
 	}
 	defer tx.Rollback()
-	refs, _ := json.Marshal(prepared.References)
+	refs := kbRefsJSON(prepared.References)
 	_, err = tx.Exec(`UPDATE kb_entries SET
 		nkey=$1, external_id=$2, products=$3::text[], tags=$4::text[], kind=$5, vulnclass=$6, severity=$7,
 		affected_versions=$8, title=$9, summary=$10, detection_guide=$11, poc_snippet=$12, remediation=$13,
@@ -694,7 +746,7 @@ func (d *DB) UpdateKBEntryContent(id int64, in KBEntry) (KBEntry, error) {
 		WHERE id=$17`,
 		prepared.NKey, prepared.ExternalID, pgTextArray(prepared.Products), pgTextArray(prepared.Tags),
 		prepared.Kind, prepared.VulnClass, prepared.Severity, prepared.AffectedVersions, prepared.Title,
-		prepared.Summary, prepared.DetectionGuide, prepared.PocSnippet, prepared.Remediation, string(refs),
+		prepared.Summary, prepared.DetectionGuide, prepared.PocSnippet, prepared.Remediation, refs,
 		prepared.ContentHash, prepared.Enabled, id)
 	if err != nil {
 		return KBEntry{}, err
@@ -780,7 +832,7 @@ func (d *DB) ApplyKBDistill(id int64, summary, guide, vulnclass string, products
 	if id <= 0 || strings.TrimSpace(guide) == "" {
 		return nil
 	}
-	products = NormalizeProducts(products)
+	products = NormalizeProducts(sanitizeStrings(products))
 	_, err := d.Exec(`UPDATE kb_entries SET
 		detection_guide=$1,
 		summary = CASE WHEN $2 <> '' AND btrim(summary) = '' THEN $2 ELSE summary END,
@@ -788,7 +840,7 @@ func (d *DB) ApplyKBDistill(id int64, summary, guide, vulnclass string, products
 		products = CASE WHEN cardinality(products) = 0 AND cardinality($4::text[]) > 0 THEN $4::text[] ELSE products END,
 		distilled = true
 		WHERE id=$5`,
-		truncateRunes(guide, 20000), truncateRunes(summary, 4000), truncateRunes(vulnclass, 120), pgTextArray(products), id)
+		truncateRunes(utf8Clean(guide), 20000), truncateRunes(utf8Clean(summary), 4000), truncateRunes(utf8Clean(vulnclass), 120), pgTextArray(products), id)
 	return err
 }
 
@@ -797,7 +849,7 @@ func (d *DB) SetKBDetectionGuide(id int64, summary, guide, vulnclass string, pro
 	if id <= 0 || strings.TrimSpace(guide) == "" {
 		return nil
 	}
-	products = NormalizeProducts(products)
+	products = NormalizeProducts(sanitizeStrings(products))
 	_, err := d.Exec(`UPDATE kb_entries SET
 		detection_guide = CASE WHEN btrim(detection_guide) = '' THEN $1 ELSE detection_guide END,
 		summary = CASE WHEN btrim(summary) = '' THEN $2 ELSE summary END,
@@ -805,7 +857,7 @@ func (d *DB) SetKBDetectionGuide(id int64, summary, guide, vulnclass string, pro
 		products = CASE WHEN cardinality(products) = 0 AND cardinality($4::text[]) > 0 THEN $4::text[] ELSE products END,
 		distilled = true
 		WHERE id=$5 AND NOT content_locked`,
-		truncateRunes(guide, 20000), truncateRunes(summary, 4000), truncateRunes(vulnclass, 120), pgTextArray(products), id)
+		truncateRunes(utf8Clean(guide), 20000), truncateRunes(utf8Clean(summary), 4000), truncateRunes(utf8Clean(vulnclass), 120), pgTextArray(products), id)
 	return err
 }
 

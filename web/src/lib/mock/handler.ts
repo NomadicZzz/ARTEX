@@ -1095,7 +1095,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     ];
     const qtext = (q.get("q") ?? "").toLowerCase();
     const filtered = items.filter((item) => !qtext || `${item.title} ${item.external_id}`.toLowerCase().includes(qtext));
-    return { items: filtered, total: filtered.length };
+    const limit = Math.max(1, Number(q.get("limit") || 20));
+    const offset = Math.max(0, Number(q.get("offset") || 0));
+    return { items: filtered.slice(offset, offset + limit), total: filtered.length };
   }
   if (seg[0] === "kb" && seg[1] === "entries" && seg[2] && m === "GET") {
     return {

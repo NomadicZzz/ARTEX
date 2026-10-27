@@ -184,12 +184,13 @@ function FindingDetailInner() {
                       <Link
                         key={entry.id}
                         href={`/function/knowledge?entry=${entry.id}`}
-                        className="block rounded-md border px-3 py-2 text-sm hover:bg-muted"
+                        className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
                       >
-                        <span className="font-medium">{entry.title}</span>
-                        <span className="ml-2 text-muted-foreground">
-                          {entry.external_id || entry.kind} · {entry.severity}
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium">{entry.title}</span>
+                          <span className="font-mono text-muted-foreground text-xs">{entry.external_id || entry.kind}</span>
                         </span>
+                        <StatusBadge domain="severity" value={entry.severity} />
                       </Link>
                     ))}
                     <p className="text-muted-foreground text-xs">知识库命中只是检测线索，不能代替本漏洞的真实证据。</p>
@@ -260,7 +261,7 @@ function FindingDetailInner() {
                       <SelectTrigger size="sm" className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0">
                         <StatusBadge domain="severity" value={finding.severity} dot />
                       </SelectTrigger>
-                      <SelectContent position="popper" align="end">
+                      <SelectContent>
                         <SelectGroup>
                           {SEVERITIES.map((sv) => (
                             <SelectItem key={sv} value={sv}>
@@ -282,7 +283,7 @@ function FindingDetailInner() {
                       <SelectTrigger size="sm" className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0">
                         <StatusBadge domain="finding" value={finding.status} dot />
                       </SelectTrigger>
-                      <SelectContent position="popper" align="end">
+                      <SelectContent>
                         <SelectGroup>
                           {FINDING_STATUSES.map((st) => (
                             <SelectItem key={st} value={st}>

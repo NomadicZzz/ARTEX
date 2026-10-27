@@ -5,35 +5,100 @@ import * as React from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
+import { BoxesIcon, BugIcon, CrosshairIcon, LibraryIcon, ListChecksIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { CopyButton } from "@/components/copy-button";
+import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import {
   Sheet,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { TablePagination } from "@/components/table-pagination";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { KBEntry, KBEntryDetail, KBSource, KBStats, KBSyncRun } from "@/lib/types";
 
 const CLUE = "命中只是检测线索。必须真实触发并取得证据后才能记为漏洞。验证任务创建后保持暂停，确认后才会开始。";
+
+const KIND_LABEL: Record<string, string> = {
+  cve: "漏洞",
+  poc: "PoC",
+  methodology: "方法",
+  checklist: "清单",
+};
+
+const SOURCE_KIND: Record<string, string> = {
+  cisa_kev: "KEV",
+  kev: "KEV",
+  nuclei: "Nuclei",
+  nvd: "NVD",
+  ghsa: "GHSA",
+  avd: "AVD",
+  seebug: "Seebug",
+  rss: "RSS",
+  git_markdown: "Git Markdown",
+};
+
+const SOURCE_KEY: Record<string, string> = {
+  cisa_kev: "KEV",
+  nuclei_templates: "Nuclei",
+  nvd_cve: "NVD",
+  github_ghsa: "GHSA",
+  aliyun_avd: "AVD",
+  seebug_rss: "Seebug",
+  custom_git_kb: "Git",
+};
+
+function kindLabel(kind: string) {
+  return KIND_LABEL[kind] || kind;
+}
+
+function sourceLabel(key: string) {
+  return SOURCE_KEY[key] || SOURCE_KIND[key] || key;
+}
+
+function syncStatusLabel(status: string) {
+  if (!status) return "未同步";
+  if (status === "ok" || status === "success") return "成功";
+  if (status === "error" || status === "failed") return "失败";
+  if (status === "running" || status === "started") return "进行中";
+  return status;
+}
+
+function SyncStatusBadge({ status }: { status: string }) {
+  const failed = status === "error" || status === "failed";
+  return <Badge variant={failed ? "destructive" : status ? "secondary" : "outline"}>{syncStatusLabel(status)}</Badge>;
+}
+
+function SeverityMark({ value }: { value: string }) {
+  if (!value || value === "info") return <Badge variant="outline">提示</Badge>;
+  return <StatusBadge domain="severity" value={value} dot />;
+}
 
 type Filters = {
   q: string;
@@ -68,6 +133,8 @@ function KnowledgeInner() {
   const [q, setQ] = React.useState("");
   const [items, setItems] = React.useState<KBEntry[]>([]);
   const [total, setTotal] = React.useState(0);
+  const [page, setPage] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState(20);
   const [loading, setLoading] = React.useState(true);
   const [detailId, setDetailId] = React.useState<number | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -77,13 +144,13 @@ function KnowledgeInner() {
     api.kbStats().then(setStats).catch((e) => toast.error((e as Error).message));
   }, []);
 
-  const loadList = React.useCallback((next: Filters) => {
+  const loadList = React.useCallback((next: Filters, pageNum: number, size: number) => {
     setLoading(true);
     api
-      .kbEntries(next)
-      .then((page) => {
-        setItems(page.items ?? []);
-        setTotal(page.total);
+      .kbEntries({ ...next, limit: size, offset: (pageNum - 1) * size })
+      .then((result) => {
+        setItems(result.items ?? []);
+        setTotal(result.total);
       })
       .catch((e) => toast.error((e as Error).message))
       .finally(() => setLoading(false));
@@ -91,7 +158,7 @@ function KnowledgeInner() {
 
   React.useEffect(() => {
     loadStats();
-    loadList(emptyFilters);
+    loadList(emptyFilters, 1, 20);
   }, [loadList, loadStats]);
 
   React.useEffect(() => {
@@ -103,136 +170,218 @@ function KnowledgeInner() {
     const next = { ...filters, ...patch };
     setFilters(next);
     if (patch.q !== undefined) setQ(patch.q);
-    loadList(next);
+    setPage(1);
+    loadList(next, 1, pageSize);
+  };
+
+  const changePage = (nextPage: number) => {
+    setPage(nextPage);
+    loadList(filters, nextPage, pageSize);
+  };
+
+  const changePageSize = (size: number) => {
+    setPageSize(size);
+    setPage(1);
+    loadList(filters, 1, size);
   };
 
   return (
-    <div className="space-y-4 p-4 md:p-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="font-semibold text-xl">知识库</h1>
+    <div className="flex min-w-0 flex-1 flex-col gap-4 md:gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="font-semibold text-xl tracking-tight">知识库</h1>
           <p className="text-muted-foreground text-sm">{CLUE}</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setImportOpen(true)}>
+          <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
             导入
           </Button>
-          <Button onClick={() => setCreateOpen(true)}>新建条目</Button>
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            新建条目
+          </Button>
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <StatCard label="条目" value={stats?.total} onClick={() => apply(emptyFilters)} />
-        <StatCard label="在野利用" value={stats?.kev} onClick={() => apply({ ...emptyFilters, actively_exploited: true })} />
-        <StatCard label="方法 / 清单" value={stats?.methodology} onClick={() => apply({ ...emptyFilters, kind: "methodology" })} />
-        <StatCard label="含 PoC" value={stats?.with_poc} onClick={() => apply({ ...emptyFilters, has_poc: true })} />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        <StatCard icon={<LibraryIcon className="size-5" aria-hidden />} label="条目" value={stats?.total} onClick={() => apply(emptyFilters)} />
         <StatCard
-          label="命中存量资产的条目"
+          icon={<ShieldAlertIcon className="size-5" aria-hidden />}
+          label="在野利用"
+          value={stats?.kev}
+          tone="text-rose-600"
+          onClick={() => apply({ ...emptyFilters, actively_exploited: true })}
+        />
+        <StatCard
+          icon={<ListChecksIcon className="size-5" aria-hidden />}
+          label="方法 / 清单"
+          value={stats?.methodology}
+          onClick={() => apply({ ...emptyFilters, kind: "methodology" })}
+        />
+        <StatCard
+          icon={<BugIcon className="size-5" aria-hidden />}
+          label="含 PoC"
+          value={stats?.with_poc}
+          tone="text-amber-500"
+          onClick={() => apply({ ...emptyFilters, has_poc: true })}
+        />
+        <StatCard
+          icon={<CrosshairIcon className="size-5" aria-hidden />}
+          label="命中存量资产"
           value={stats?.matched_entries}
           onClick={() => apply({ ...emptyFilters, matched_assets_only: true })}
         />
-        <StatCard label="被命中的资产" value={stats?.matched_assets} />
+        <StatCard icon={<BoxesIcon className="size-5" aria-hidden />} label="被命中的资产" value={stats?.matched_assets} />
       </div>
 
-      <Tabs defaultValue="search">
+      <Tabs defaultValue="search" className="min-w-0 gap-4">
         <TabsList>
           <TabsTrigger value="search">检索与资产碰撞</TabsTrigger>
           <TabsTrigger value="sources">情报源与同步日志</TabsTrigger>
         </TabsList>
-        <TabsContent value="search" className="mt-4 space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <Input
-              value={q}
-              placeholder="CVE、产品或关键词"
-              className="max-w-sm"
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") apply({ q });
-              }}
-            />
-            <select className="h-9 rounded-md border bg-background px-2 text-sm" value={filters.kind} onChange={(e) => apply({ kind: e.target.value })}>
-              <option value="all">全部类型</option>
-              <option value="cve">CVE</option>
-              <option value="poc">PoC</option>
-              <option value="methodology">方法</option>
-              <option value="checklist">清单</option>
-            </select>
-            <select
-              className="h-9 rounded-md border bg-background px-2 text-sm"
-              value={filters.min_severity}
-              onChange={(e) => apply({ min_severity: e.target.value })}
-            >
-              <option value="all">全部等级</option>
-              <option value="critical">严重及以上</option>
-              <option value="high">高危及以上</option>
-              <option value="medium">中危及以上</option>
-              <option value="low">低危及以上</option>
-            </select>
-            <Button variant="secondary" onClick={() => apply({ q })}>
+        <TabsContent value="search" className="min-w-0 space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <InputGroup className="w-full sm:w-72">
+              <InputGroupInput
+                type="search"
+                value={q}
+                placeholder="CVE、产品或关键词"
+                aria-label="检索知识库"
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") apply({ q });
+                }}
+              />
+              <InputGroupAddon>
+                <SearchIcon aria-hidden />
+              </InputGroupAddon>
+            </InputGroup>
+            <Select value={filters.kind} onValueChange={(value) => apply({ kind: value })}>
+              <SelectTrigger className="w-36">
+                <SelectValue placeholder="类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">全部类型</SelectItem>
+                  <SelectItem value="cve">漏洞</SelectItem>
+                  <SelectItem value="poc">PoC</SelectItem>
+                  <SelectItem value="methodology">方法</SelectItem>
+                  <SelectItem value="checklist">清单</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Select value={filters.min_severity} onValueChange={(value) => apply({ min_severity: value })}>
+              <SelectTrigger className="w-36">
+                <SelectValue placeholder="等级" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">全部等级</SelectItem>
+                  <SelectItem value="critical">严重及以上</SelectItem>
+                  <SelectItem value="high">高危及以上</SelectItem>
+                  <SelectItem value="medium">中危及以上</SelectItem>
+                  <SelectItem value="low">低危及以上</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Button size="sm" variant="outline" onClick={() => apply({ q })}>
               搜索
             </Button>
-            <label className="flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 text-muted-foreground text-sm">
               <Switch checked={filters.matched_assets_only} onCheckedChange={(v) => apply({ matched_assets_only: v })} />
               仅看命中存量资产
             </label>
-            <label className="flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 text-muted-foreground text-sm">
               <Switch checked={filters.actively_exploited} onCheckedChange={(v) => apply({ actively_exploited: v })} />
-              仅看 KEV 在野利用
+              仅看在野利用
             </label>
-            <label className="flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 text-muted-foreground text-sm">
               <Switch checked={filters.has_poc} onCheckedChange={(v) => apply({ has_poc: v })} />
               仅看含 PoC
             </label>
           </div>
-          <Card>
-            <CardHeader className="py-3">
-              <CardTitle className="text-sm">{loading ? "加载中…" : `${total} 条`}</CardTitle>
-            </CardHeader>
+          <Card className="min-w-0 gap-0 overflow-hidden py-0">
             <CardContent className="px-0">
-              <Table>
+              <Table className="table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>标题</TableHead>
-                    <TableHead>编号</TableHead>
-                    <TableHead>类型</TableHead>
-                    <TableHead>等级</TableHead>
-                    <TableHead>CVSS</TableHead>
-                    <TableHead>来源</TableHead>
+                    <TableHead className="w-[34%]">标题</TableHead>
+                    <TableHead className="w-[14%]">编号</TableHead>
+                    <TableHead className="w-[8%]">类型</TableHead>
+                    <TableHead className="w-[10%]">等级</TableHead>
+                    <TableHead className="w-[8%]">CVSS</TableHead>
+                    <TableHead className="w-[12%]">来源</TableHead>
                     <TableHead>产品</TableHead>
-                    <TableHead>命中资产</TableHead>
+                    <TableHead className="w-[8%]">命中</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {items.map((item) => (
-                    <TableRow key={item.id} className="cursor-pointer" onClick={() => setDetailId(item.id)}>
-                      <TableCell>
-                        <div className="font-medium">{item.title}</div>
-                        <div className="text-muted-foreground text-xs">{item.summary}</div>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">{item.external_id || "—"}</TableCell>
-                      <TableCell className="text-xs">{item.kind}</TableCell>
-                      <TableCell>
-                        <Badge variant={item.actively_exploited ? "destructive" : "secondary"}>{item.severity}</Badge>
-                      </TableCell>
-                      <TableCell className="text-xs tabular-nums">{item.cvss_score ?? "—"}</TableCell>
-                      <TableCell className="text-xs">{(item.source_keys ?? []).join(" + ") || "—"}</TableCell>
-                      <TableCell className="text-xs">{(item.products ?? []).slice(0, 3).join(", ")}</TableCell>
-                      <TableCell>{item.matched_asset_count ? `命中存量资产 (${item.matched_asset_count})` : "—"}</TableCell>
-                    </TableRow>
-                  ))}
+                  {items.map((item) => {
+                    const products = (item.products ?? []).filter(Boolean);
+                    const sources = item.source_keys ?? [];
+                    return (
+                      <TableRow key={item.id} className="cursor-pointer" onClick={() => setDetailId(item.id)}>
+                        <TableCell className="overflow-hidden">
+                          <div className="truncate font-medium" title={item.title}>
+                            {item.title}
+                          </div>
+                          <div className="truncate text-muted-foreground text-xs" title={item.summary}>
+                            {item.summary}
+                          </div>
+                        </TableCell>
+                        <TableCell className="overflow-hidden">
+                          <code className="block truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground" title={item.external_id || item.nkey}>
+                            {item.external_id || "—"}
+                          </code>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{kindLabel(item.kind)}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <SeverityMark value={item.severity} />
+                        </TableCell>
+                        <TableCell className="text-xs tabular-nums">{item.cvss_score ?? "—"}</TableCell>
+                        <TableCell className="overflow-hidden text-xs">
+                          <span className="block truncate" title={sources.join(" · ")}>
+                            {sources.map(sourceLabel).join(" · ") || "—"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="overflow-hidden text-xs">
+                          <span className="block truncate" title={products.join("、")}>
+                            {products.slice(0, 2).join("、") || "—"}
+                            {products.length > 2 ? ` +${products.length - 2}` : ""}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          {item.matched_asset_count ? (
+                            <Badge variant="outline">{item.matched_asset_count}</Badge>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                   {!loading && items.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-muted-foreground">
+                      <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                         没有条目
                       </TableCell>
                     </TableRow>
                   )}
                 </TableBody>
               </Table>
+              <TablePagination
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPageChange={changePage}
+                onPageSizeChange={changePageSize}
+                pageSizeOptions={[10, 20, 50, 100]}
+              />
             </CardContent>
           </Card>
         </TabsContent>
-        <TabsContent value="sources" className="mt-4">
+        <TabsContent value="sources">
           <SourcesPanel />
         </TabsContent>
       </Tabs>
@@ -246,7 +395,7 @@ function KnowledgeInner() {
           await api.kbCreateEntry({ ...body, origin: "manual", kind: body.kind || "methodology" });
           toast.success("已写入");
           setCreateOpen(false);
-          loadList(filters);
+          loadList(filters, page, pageSize);
           loadStats();
         }}
       />
@@ -255,7 +404,7 @@ function KnowledgeInner() {
         onClose={() => setImportOpen(false)}
         onDone={() => {
           setImportOpen(false);
-          loadList(filters);
+          loadList(filters, page, pageSize);
           loadStats();
         }}
       />
@@ -263,16 +412,44 @@ function KnowledgeInner() {
   );
 }
 
-function StatCard({ label, value, onClick }: { label: string; value?: number; onClick?: () => void }) {
+function StatCard({
+  icon,
+  label,
+  value,
+  tone,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value?: number;
+  tone?: string;
+  onClick?: () => void;
+}) {
+  const card = (
+    <Card className={cn("gap-1 py-4", onClick && "transition-colors hover:bg-muted/40")}>
+      <CardHeader className="px-4">
+        <CardDescription>{label}</CardDescription>
+        <CardTitle className={cn("flex items-center gap-2 text-2xl tabular-nums", tone)}>
+          {icon}
+          {value ?? "—"}
+        </CardTitle>
+      </CardHeader>
+    </Card>
+  );
+  if (!onClick) return card;
   return (
-    <button type="button" onClick={onClick} className="text-left" disabled={!onClick}>
-      <Card className={onClick ? "hover:bg-muted/40" : ""}>
-        <CardHeader className="pb-1">
-          <CardTitle className="text-muted-foreground text-xs font-normal">{label}</CardTitle>
-        </CardHeader>
-        <CardContent className="text-2xl font-semibold tabular-nums">{value ?? "—"}</CardContent>
-      </Card>
+    <button type="button" onClick={onClick} className="text-left">
+      {card}
     </button>
+  );
+}
+
+function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-2.5">
+      <span className="shrink-0 pt-0.5 text-muted-foreground text-xs">{label}</span>
+      <div className="flex min-w-0 flex-col items-end gap-1 text-right text-sm">{children}</div>
+    </div>
   );
 }
 
@@ -303,142 +480,248 @@ function EntrySheet({ id, onClose, onChanged }: { id: number | null; onClose: ()
     api.kbEntry(id).then(setDetail).catch((e) => toast.error((e as Error).message));
     onChanged();
   };
+  const assets = detail?.matched_assets ?? [];
+  const findings = detail?.related_findings ?? [];
+  const products = entry?.products ?? [];
+  const sources = entry?.source_keys ?? [];
+  const references = entry?.references ?? [];
 
   return (
     <Sheet open={id != null} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
-        {!entry ? (
-          <p className="text-muted-foreground text-sm">加载中…</p>
-        ) : (
-          <>
-            <SheetHeader>
-              <SheetTitle>{entry.title}</SheetTitle>
-              <SheetDescription>
-                {entry.external_id || entry.nkey} · {entry.severity}
-                {entry.actively_exploited ? " · 在野利用" : ""}
-              </SheetDescription>
-            </SheetHeader>
-            <div className="mt-4 space-y-4 text-sm">
-              <p className="text-muted-foreground">{CLUE}</p>
-              <p className="whitespace-pre-wrap">{entry.summary}</p>
-              {entry.affected_versions && <p>受影响版本：{entry.affected_versions}</p>}
-              <section>
-                <h3 className="mb-1 font-medium">检测思路</h3>
-                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">{entry.detection_guide || "（空）"}</pre>
-              </section>
+      <SheetContent className="grid h-full w-full! max-w-none! grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden bg-background p-0 text-foreground sm:w-[36rem]! sm:max-w-[36rem]!">
+        <SheetHeader className="border-b bg-background px-5 py-4 pr-12">
+          <SheetTitle className="text-base leading-snug">{entry?.title || "条目详情"}</SheetTitle>
+          {entry ? (
+            <>
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
+                  {entry.external_id || entry.nkey}
+                </code>
+                <StatusBadge domain="severity" value={entry.severity} dot />
+                <Badge variant="outline">{KIND_LABEL[entry.kind] || entry.kind}</Badge>
+                {entry.actively_exploited && <Badge variant="destructive">在野利用</Badge>}
+                {entry.has_poc && <Badge variant="secondary">含 PoC</Badge>}
+              </div>
+              <SheetDescription className="pt-1 text-xs leading-relaxed">{CLUE}</SheetDescription>
+            </>
+          ) : (
+            <SheetDescription>加载中…</SheetDescription>
+          )}
+        </SheetHeader>
+        <div className="min-h-0 overflow-y-auto px-5 py-4">
+          {!entry || !detail ? (
+            <p className="text-muted-foreground text-sm">加载中…</p>
+          ) : (
+            <div className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">摘要</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{entry.summary || "（无摘要）"}</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">属性</CardTitle>
+                </CardHeader>
+                <CardContent className="divide-y pt-0">
+                  <MetaRow label="CVSS">
+                    <span className="tabular-nums">{entry.cvss_score ?? "—"}</span>
+                  </MetaRow>
+                  <MetaRow label="来源">
+                    <span>{sources.length > 0 ? sources.map(sourceLabel).join(" · ") : "—"}</span>
+                  </MetaRow>
+                  <MetaRow label="产品">
+                    {products.length > 0 ? (
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {products.map((product) => (
+                          <code key={product} className="max-w-56 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs" title={product}>
+                            {product}
+                          </code>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </MetaRow>
+                  <MetaRow label="受影响版本">
+                    <span className="whitespace-pre-wrap">{entry.affected_versions || "—"}</span>
+                  </MetaRow>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">检测思路</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {entry.detection_guide ? (
+                    <pre className="max-h-64 overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+                      {entry.detection_guide}
+                    </pre>
+                  ) : (
+                    <p className="text-muted-foreground text-sm">（空）</p>
+                  )}
+                </CardContent>
+              </Card>
               {entry.remediation && (
-                <section>
-                  <h3 className="mb-1 font-medium">修复建议</h3>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">{entry.remediation}</pre>
-                </section>
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">修复建议</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <pre className="max-h-48 overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+                      {entry.remediation}
+                    </pre>
+                  </CardContent>
+                </Card>
               )}
               {entry.poc_snippet && (
-                <section>
-                  <div className="mb-1 flex items-center justify-between">
-                    <h3 className="font-medium">PoC 片段</h3>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(entry.poc_snippet || "");
-                        toast.success("已复制");
-                      }}
-                    >
-                      复制
-                    </Button>
-                  </div>
-                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">{entry.poc_snippet}</pre>
-                </section>
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">PoC 片段</CardTitle>
+                    <CardAction>
+                      <CopyButton text={entry.poc_snippet} />
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent>
+                    <pre className="max-h-64 overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+                      {entry.poc_snippet}
+                    </pre>
+                  </CardContent>
+                </Card>
               )}
-              <section>
-                <h3 className="mb-2 font-medium">命中存量资产 ({detail.matched_assets?.length ?? 0})</h3>
-                <div className="space-y-1">
-                  {(detail.matched_assets ?? []).map((asset) => (
-                    <label key={asset.asset_id} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
+              {references.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">参考</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-1">
+                    {references.map((ref) => (
+                      <a
+                        key={ref.url}
+                        href={ref.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block truncate text-primary text-sm hover:underline"
+                      >
+                        {ref.title || ref.url}
+                      </a>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">命中存量资产 ({assets.length})</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {assets.map((asset) => (
+                    <label key={asset.asset_id} className="flex items-start gap-3 rounded-lg border px-3 py-2 hover:bg-muted/50">
+                      <Checkbox
+                        className="mt-0.5"
                         checked={picked.includes(asset.asset_id)}
-                        onChange={(e) =>
+                        onCheckedChange={(checked) =>
                           setPicked((cur) =>
-                            e.target.checked ? [...cur, asset.asset_id] : cur.filter((x) => x !== asset.asset_id),
+                            checked === true
+                              ? cur.includes(asset.asset_id)
+                                ? cur
+                                : [...cur, asset.asset_id]
+                              : cur.filter((x) => x !== asset.asset_id),
                           )
                         }
                       />
-                      <span>
-                        {asset.label} <span className="text-muted-foreground">{(asset.matched_tech ?? []).join(", ")}</span>
+                      <span className="min-w-0">
+                        <span className="block text-sm">{asset.label}</span>
+                        {(asset.matched_tech ?? []).length > 0 && (
+                          <span className="text-muted-foreground text-xs">{(asset.matched_tech ?? []).join(", ")}</span>
+                        )}
                       </span>
                     </label>
                   ))}
-                  {(detail.matched_assets ?? []).length === 0 && <p className="text-muted-foreground">没有命中资产</p>}
-                </div>
-              </section>
-              {(detail.related_findings ?? []).length > 0 && (
-                <section>
-                  <h3 className="mb-1 font-medium">关联漏洞</h3>
-                  {(detail.related_findings ?? []).map((f) => (
-                    <Link key={f.id} href={`/function/findings/detail?id=${f.id}`} className="block text-primary hover:underline">
-                      {f.name || f.vulnclass} · {f.severity}
-                    </Link>
-                  ))}
-                </section>
+                  {assets.length === 0 && <p className="text-muted-foreground text-sm">没有命中资产</p>}
+                </CardContent>
+              </Card>
+              {findings.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">关联漏洞</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {findings.map((f) => (
+                      <Link
+                        key={f.id}
+                        href={`/function/findings/detail?id=${f.id}`}
+                        className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
+                      >
+                        <span className="min-w-0 truncate font-medium">{f.name || f.vulnclass}</span>
+                        <StatusBadge domain="severity" value={f.severity} />
+                      </Link>
+                    ))}
+                  </CardContent>
+                </Card>
               )}
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  disabled={busy}
-                  onClick={async () => {
-                    if (picked.length === 0) {
-                      toast.error("至少选择一个资产");
-                      return;
-                    }
-                    setBusy(true);
-                    try {
-                      const res = await api.kbCreateVerifyTask(entry.id, picked);
-                      toast.success(res.message);
-                    } catch (e) {
-                      toast.error((e as Error).message);
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  创建验证任务
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      await api.kbDistillEntry(entry.id);
-                      toast.success("已整理检测思路");
-                      reload();
-                    } catch (e) {
-                      toast.error((e as Error).message);
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  AI 整理
-                </Button>
-                <Button variant="outline" onClick={() => setEdit(true)}>
-                  编辑
-                </Button>
-              </div>
             </div>
-            <EntryDialog
-              open={edit}
-              title="编辑条目"
-              initial={entry}
-              onClose={() => setEdit(false)}
-              onSubmit={async (body) => {
-                await api.kbUpdateEntry(entry.id, body);
-                toast.success("已保存");
-                setEdit(false);
-                reload();
+          )}
+        </div>
+        {entry && (
+          <SheetFooter className="mt-0 border-t bg-background px-5 py-3 sm:flex-row sm:justify-end">
+            <Button variant="outline" onClick={() => setEdit(true)}>
+              编辑
+            </Button>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await api.kbDistillEntry(entry.id);
+                  toast.success("已整理检测思路");
+                  reload();
+                } catch (e) {
+                  toast.error((e as Error).message);
+                } finally {
+                  setBusy(false);
+                }
               }}
-            />
-          </>
+            >
+              AI 整理
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={async () => {
+                if (picked.length === 0) {
+                  toast.error("至少选择一个资产");
+                  return;
+                }
+                setBusy(true);
+                try {
+                  const res = await api.kbCreateVerifyTask(entry.id, picked);
+                  toast.success(res.message);
+                } catch (e) {
+                  toast.error((e as Error).message);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              创建验证任务
+            </Button>
+          </SheetFooter>
+        )}
+        {entry && (
+          <EntryDialog
+            open={edit}
+            title="编辑条目"
+            initial={entry}
+            onClose={() => setEdit(false)}
+            onSubmit={async (body) => {
+              await api.kbUpdateEntry(entry.id, body);
+              toast.success("已保存");
+              setEdit(false);
+              reload();
+            }}
+          />
         )}
       </SheetContent>
     </Sheet>
@@ -477,36 +760,64 @@ function EntryDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>保存后正文锁定，后续同步只补充编号、在野利用和来源。</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <Label>标题</Label>
-          <Input value={titleText} onChange={(e) => setTitleText(e.target.value)} />
-          <Label>摘要</Label>
-          <Textarea value={summary} onChange={(e) => setSummary(e.target.value)} />
-          <Label>检测思路</Label>
-          <Textarea value={guide} onChange={(e) => setGuide(e.target.value)} />
-          <Label>产品（逗号分隔）</Label>
-          <Input value={products} onChange={(e) => setProducts(e.target.value)} />
-          <div className="flex gap-2">
-            <select className="h-9 rounded-md border bg-background px-2 text-sm" value={kind} onChange={(e) => setKind(e.target.value)}>
-              <option value="methodology">方法</option>
-              <option value="checklist">清单</option>
-              <option value="poc">PoC</option>
-              <option value="cve">CVE</option>
-            </select>
-            <select className="h-9 rounded-md border bg-background px-2 text-sm" value={severity} onChange={(e) => setSeverity(e.target.value)}>
-              <option value="info">info</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="critical">critical</option>
-            </select>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="kb-entry-title">标题</FieldLabel>
+            <Input id="kb-entry-title" value={titleText} onChange={(e) => setTitleText(e.target.value)} />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="kb-entry-summary">摘要</FieldLabel>
+            <Textarea id="kb-entry-summary" value={summary} onChange={(e) => setSummary(e.target.value)} />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="kb-entry-guide">检测思路</FieldLabel>
+            <Textarea id="kb-entry-guide" value={guide} onChange={(e) => setGuide(e.target.value)} />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="kb-entry-products">产品（逗号分隔）</FieldLabel>
+            <Input id="kb-entry-products" value={products} onChange={(e) => setProducts(e.target.value)} />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel>类型</FieldLabel>
+              <Select value={kind} onValueChange={setKind}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="methodology">方法</SelectItem>
+                  <SelectItem value="checklist">清单</SelectItem>
+                  <SelectItem value="poc">PoC</SelectItem>
+                  <SelectItem value="cve">漏洞</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel>等级</FieldLabel>
+              <Select value={severity} onValueChange={setSeverity}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="info">提示</SelectItem>
+                  <SelectItem value="low">低危</SelectItem>
+                  <SelectItem value="medium">中危</SelectItem>
+                  <SelectItem value="high">高危</SelectItem>
+                  <SelectItem value="critical">严重</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
           </div>
-        </div>
+        </FieldGroup>
         <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
           <Button
             onClick={() =>
               onSubmit({
@@ -515,7 +826,10 @@ function EntryDialog({
                 detection_guide: guide,
                 severity,
                 kind,
-                products: products.split(",").map((s) => s.trim()).filter(Boolean),
+                products: products
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
                 enabled: true,
               }).catch((e) => toast.error((e as Error).message))
             }
@@ -533,16 +847,33 @@ function ImportDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
   const [content, setContent] = React.useState("");
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>导入 Markdown / JSON</DialogTitle>
+          <DialogDescription>Markdown 按一级标题拆成方法条目，JSON 按条目数组写入。</DialogDescription>
         </DialogHeader>
-        <select className="h-9 rounded-md border bg-background px-2 text-sm" value={format} onChange={(e) => setFormat(e.target.value)}>
-          <option value="markdown">Markdown（按一级标题拆分）</option>
-          <option value="json">JSON</option>
-        </select>
-        <Textarea value={content} onChange={(e) => setContent(e.target.value)} className="min-h-40" />
+        <FieldGroup>
+          <Field>
+            <FieldLabel>格式</FieldLabel>
+            <Select value={format} onValueChange={setFormat}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="markdown">Markdown（按一级标题拆分）</SelectItem>
+                <SelectItem value="json">JSON</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="kb-import-content">内容</FieldLabel>
+            <Textarea id="kb-import-content" value={content} onChange={(e) => setContent(e.target.value)} className="min-h-40" />
+          </Field>
+        </FieldGroup>
         <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
           <Button
             onClick={async () => {
               try {
@@ -599,17 +930,21 @@ function SourcesPanel() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="text-sm">情报源</CardTitle>
-          <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
-            添加自定义源
-          </Button>
+      <Card className="gap-0 overflow-hidden py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle className="text-base">情报源</CardTitle>
+          <CardDescription>启用后按周期同步。内置源不能删除。</CardDescription>
+          <CardAction>
+            <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
+              添加自定义源
+            </Button>
+          </CardAction>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="divide-y px-0">
           {sources.map((src) => (
             <SourceCard key={src.id} src={src} onChanged={load} />
           ))}
+          {sources.length === 0 && <p className="px-4 py-8 text-center text-muted-foreground text-sm">没有情报源</p>}
         </CardContent>
       </Card>
       <CreateSourceDialog
@@ -620,15 +955,15 @@ function SourcesPanel() {
           load();
         }}
       />
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">同步日志</CardTitle>
+      <Card className="gap-0 overflow-hidden py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle className="text-base">同步日志</CardTitle>
         </CardHeader>
         <CardContent className="px-0">
-          <Table>
+          <Table className="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead>源</TableHead>
+                <TableHead className="w-[18%]">源</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>拉取 / 新增 / 合并</TableHead>
                 <TableHead>耗时</TableHead>
@@ -638,18 +973,26 @@ function SourcesPanel() {
             <TableBody>
               {runs.map((run) => (
                 <TableRow key={run.id}>
-                  <TableCell>{run.source_key || run.source_id}</TableCell>
-                  <TableCell>{run.status}</TableCell>
+                  <TableCell className="overflow-hidden font-medium">
+                    <span className="block truncate" title={run.source_key}>
+                      {sourceLabel(run.source_key || String(run.source_id))}
+                    </span>
+                  </TableCell>
                   <TableCell>
+                    <SyncStatusBadge status={run.status} />
+                  </TableCell>
+                  <TableCell className="tabular-nums">
                     {run.fetched_count} / {run.upserted_count} / {run.merged_count}
                   </TableCell>
-                  <TableCell className="text-xs">{runDuration(run)}</TableCell>
-                  <TableCell className="text-xs">{run.error}</TableCell>
+                  <TableCell className="text-xs tabular-nums">{runDuration(run)}</TableCell>
+                  <TableCell className="overflow-hidden text-destructive text-xs" title={run.error}>
+                    <span className="block truncate">{run.error || "—"}</span>
+                  </TableCell>
                 </TableRow>
               ))}
               {runs.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-muted-foreground">
+                  <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
                     还没有同步记录
                   </TableCell>
                 </TableRow>
@@ -722,18 +1065,24 @@ function SourceCard({ src, onChanged }: { src: KBSource; onChanged: () => void }
   };
 
   return (
-    <div className="rounded-md border p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="font-medium">{src.name}</div>
-          <div className="text-muted-foreground text-xs">
-            {src.kind} · {src.entry_count} 条 · {src.last_status || "未同步"}
-            {src.last_error ? ` · ${src.last_error}` : ""}
+    <div className="px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">{src.name}</span>
+            <Badge variant="outline">{SOURCE_KIND[src.kind] || src.kind}</Badge>
+            <SyncStatusBadge status={src.last_status} />
+            {src.builtin && <Badge variant="secondary">内置</Badge>}
           </div>
+          <p className="mt-1 truncate text-muted-foreground text-xs" title={src.last_error || undefined}>
+            <span className="tabular-nums">{src.entry_count} 条</span>
+            {src.last_error ? <span className="text-destructive"> · {src.last_error}</span> : null}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Switch
             checked={src.enabled}
+            aria-label={`启用 ${src.name}`}
             onCheckedChange={async (enabled) => {
               try {
                 await api.kbUpdateSource(src.id, {
@@ -749,7 +1098,7 @@ function SourceCard({ src, onChanged }: { src: KBSource; onChanged: () => void }
             }}
           />
           <Button size="sm" variant="outline" onClick={() => setOpen((v) => !v)}>
-            配置
+            {open ? "收起" : "配置"}
           </Button>
           <Button
             size="sm"
@@ -784,72 +1133,84 @@ function SourceCard({ src, onChanged }: { src: KBSource; onChanged: () => void }
         </div>
       </div>
       {open && (
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <label className="text-xs">
-            同步周期（小时）
-            <Input value={hours} onChange={(e) => setHours(e.target.value)} />
-          </label>
-          {windowed && (
-            <>
-              <label className="text-xs">
-                最低等级
-                <select className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" value={minSev} onChange={(e) => setMinSev(e.target.value)}>
-                  <option value="critical">critical</option>
-                  <option value="high">high</option>
-                  <option value="medium">medium</option>
-                  <option value="low">low</option>
-                </select>
-              </label>
-              <label className="text-xs">
-                时间窗口（天，最多 119）
-                <Input value={sinceDays} onChange={(e) => setSinceDays(e.target.value)} />
-              </label>
-            </>
-          )}
-          {feed && (
-            <label className="text-xs sm:col-span-2">
-              Feed URL
-              <Input value={feedURL} onChange={(e) => setFeedURL(e.target.value)} />
-            </label>
-          )}
-          {src.kind === "avd" && (
-            <label className="text-xs">
-              列表页数
-              <Input value={pageLimit} onChange={(e) => setPageLimit(e.target.value)} />
-            </label>
-          )}
-          {git && (
-            <>
-              <label className="text-xs sm:col-span-2">
-                仓库 URL
-                <Input value={repoURL} onChange={(e) => setRepoURL(e.target.value)} placeholder="https://github.com/org/repo" />
-              </label>
-              <label className="text-xs">
-                分支
-                <Input value={branch} onChange={(e) => setBranch(e.target.value)} />
-              </label>
-              <label className="text-xs">
-                路径
-                <Input value={repoPath} onChange={(e) => setRepoPath(e.target.value)} />
-              </label>
-            </>
-          )}
-          {(windowed || src.kind === "nuclei") && (
-            <label className="text-xs sm:col-span-2">
-              API Key{src.api_key_set ? "（已设置，留空则保留）" : ""}
-              <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" />
-            </label>
-          )}
-          <label className="flex items-center gap-2 text-xs sm:col-span-2">
-            <Switch checked={distill} onCheckedChange={setDistill} />
-            同步后用模型整理空的检测思路（默认关闭）
-          </label>
+        <FieldGroup className="mt-4 border-t pt-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor={`kb-hours-${src.id}`}>同步周期（小时）</FieldLabel>
+              <Input id={`kb-hours-${src.id}`} value={hours} onChange={(e) => setHours(e.target.value)} />
+            </Field>
+            {windowed && (
+              <>
+                <Field>
+                  <FieldLabel>最低等级</FieldLabel>
+                  <Select value={minSev} onValueChange={setMinSev}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="critical">严重</SelectItem>
+                      <SelectItem value="high">高危</SelectItem>
+                      <SelectItem value="medium">中危</SelectItem>
+                      <SelectItem value="low">低危</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor={`kb-days-${src.id}`}>时间窗口（天，最多 119）</FieldLabel>
+                  <Input id={`kb-days-${src.id}`} value={sinceDays} onChange={(e) => setSinceDays(e.target.value)} />
+                </Field>
+              </>
+            )}
+            {feed && (
+              <Field className="sm:col-span-2">
+                <FieldLabel htmlFor={`kb-feed-${src.id}`}>Feed URL</FieldLabel>
+                <Input id={`kb-feed-${src.id}`} value={feedURL} onChange={(e) => setFeedURL(e.target.value)} />
+              </Field>
+            )}
+            {src.kind === "avd" && (
+              <Field>
+                <FieldLabel htmlFor={`kb-pages-${src.id}`}>列表页数</FieldLabel>
+                <Input id={`kb-pages-${src.id}`} value={pageLimit} onChange={(e) => setPageLimit(e.target.value)} />
+              </Field>
+            )}
+            {git && (
+              <>
+                <Field className="sm:col-span-2">
+                  <FieldLabel htmlFor={`kb-repo-${src.id}`}>仓库 URL</FieldLabel>
+                  <Input
+                    id={`kb-repo-${src.id}`}
+                    value={repoURL}
+                    placeholder="https://github.com/org/repo"
+                    onChange={(e) => setRepoURL(e.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor={`kb-branch-${src.id}`}>分支</FieldLabel>
+                  <Input id={`kb-branch-${src.id}`} value={branch} onChange={(e) => setBranch(e.target.value)} />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor={`kb-path-${src.id}`}>路径</FieldLabel>
+                  <Input id={`kb-path-${src.id}`} value={repoPath} onChange={(e) => setRepoPath(e.target.value)} />
+                </Field>
+              </>
+            )}
+            {(windowed || src.kind === "nuclei") && (
+              <Field className="sm:col-span-2">
+                <FieldLabel htmlFor={`kb-key-${src.id}`}>API Key{src.api_key_set ? "（已设置，留空则保留）" : ""}</FieldLabel>
+                <Input id={`kb-key-${src.id}`} type="password" value={apiKey} autoComplete="off" onChange={(e) => setApiKey(e.target.value)} />
+              </Field>
+            )}
+          </div>
+          <Field orientation="horizontal">
+            <Switch id={`kb-distill-${src.id}`} checked={distill} onCheckedChange={setDistill} />
+            <FieldLabel htmlFor={`kb-distill-${src.id}`}>同步后用模型整理空的检测思路（默认关闭）</FieldLabel>
+          </Field>
           <div>
             <Button size="sm" onClick={() => void save()}>
               保存配置
             </Button>
           </div>
-        </div>
+        </FieldGroup>
       )}
     </div>
   );
@@ -862,23 +1223,41 @@ function CreateSourceDialog({ open, onClose, onDone }: { open: boolean; onClose:
   const [target, setTarget] = React.useState("");
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>添加自定义源</DialogTitle>
+          <DialogDescription>自定义源可以是 Git 仓库里的 Markdown，或一条 RSS。</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <Label>标识（字母、数字、下划线）</Label>
-          <Input value={key} onChange={(e) => setKey(e.target.value)} />
-          <Label>名称</Label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
-          <select className="h-9 rounded-md border bg-background px-2 text-sm" value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="git_markdown">Git Markdown</option>
-            <option value="rss">RSS</option>
-          </select>
-          <Label>{kind === "rss" ? "Feed URL" : "仓库 URL"}</Label>
-          <Input value={target} onChange={(e) => setTarget(e.target.value)} />
-        </div>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="kb-source-key">标识（字母、数字、下划线）</FieldLabel>
+            <Input id="kb-source-key" value={key} onChange={(e) => setKey(e.target.value)} />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="kb-source-name">名称</FieldLabel>
+            <Input id="kb-source-name" value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field>
+            <FieldLabel>类型</FieldLabel>
+            <Select value={kind} onValueChange={setKind}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="git_markdown">Git Markdown</SelectItem>
+                <SelectItem value="rss">RSS</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="kb-source-target">{kind === "rss" ? "Feed URL" : "仓库 URL"}</FieldLabel>
+            <Input id="kb-source-target" value={target} onChange={(e) => setTarget(e.target.value)} />
+          </Field>
+        </FieldGroup>
         <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
           <Button
             onClick={async () => {
               try {

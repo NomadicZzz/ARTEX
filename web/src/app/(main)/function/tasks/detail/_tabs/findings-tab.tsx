@@ -94,7 +94,7 @@ function Row({
             <SelectTrigger size="sm" className="h-7 w-28 shrink-0 border-none px-1 shadow-none focus-visible:ring-0">
               <StatusBadge domain="finding" value={f.status} dot />
             </SelectTrigger>
-            <SelectContent position="popper" align="end">
+            <SelectContent>
               <SelectGroup>
                 {FINDING_STATUSES.map((st) => (
                   <SelectItem key={st} value={st}>
