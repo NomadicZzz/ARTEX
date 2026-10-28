@@ -25,6 +25,7 @@ import { api } from "@/lib/api";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
 
+import { FindingDistillSheet } from "./distill-sheet";
 import { FindingLineageView } from "./lineage";
 
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
@@ -61,7 +62,7 @@ function FindingDetailInner() {
   const [finding, setFinding] = React.useState<Finding | null>(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
-  const [distilling, setDistilling] = React.useState(false);
+  const [distillOpen, setDistillOpen] = React.useState(false);
 
   const load = React.useCallback(() => {
     if (!id) {
@@ -103,7 +104,11 @@ function FindingDetailInner() {
       try {
         const updated = await api.setFindingStatus(id, next);
         setFinding(updated);
-        toast.success(`处理状态已改为「${statusMeta("finding", next).label}」`);
+        if (next === "confirmed" && updated.distill_queued) {
+          toast.success("已确认漏洞，正在后台自动脱敏沉淀至知识库");
+        } else {
+          toast.success(`处理状态已改为「${statusMeta("finding", next).label}」`);
+        }
       } catch (e) {
         setFinding((cur) => (cur ? { ...cur, status: prev } : cur));
         toast.error("更新失败：" + (e as Error).message);
@@ -190,7 +195,10 @@ function FindingDetailInner() {
                           <span className="block truncate font-medium">{entry.title}</span>
                           <span className="font-mono text-muted-foreground text-xs">{entry.external_id || entry.kind}</span>
                         </span>
-                        <StatusBadge domain="severity" value={entry.severity} />
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          <Badge variant="outline">{entry.from_distill ? "本漏洞沉淀产出" : "探测线索"}</Badge>
+                          <StatusBadge domain="severity" value={entry.severity} />
+                        </span>
                       </Link>
                     ))}
                     <p className="text-muted-foreground text-xs">知识库命中只是检测线索，不能代替本漏洞的真实证据。</p>
@@ -346,25 +354,8 @@ function FindingDetailInner() {
                 </FieldRow>
                 {!finding.inherited && (
                   <div className="pt-3">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      disabled={distilling}
-                      onClick={async () => {
-                        setDistilling(true);
-                        try {
-                          const res = await api.distillFindingKB(id);
-                          toast.success(`已沉淀：${res.entry.title || "知识条目"}`);
-                          load();
-                        } catch (e) {
-                          toast.error("沉淀失败：" + (e as Error).message);
-                        } finally {
-                          setDistilling(false);
-                        }
-                      }}
-                    >
-                      {distilling ? "沉淀中…" : "沉淀至知识库"}
+                    <Button variant="outline" size="sm" className="w-full" onClick={() => setDistillOpen(true)}>
+                      沉淀至知识库
                     </Button>
                     <p className="mt-2 text-xs text-muted-foreground">先脱敏再整理成检测线索，不会把它当成新的漏洞。</p>
                   </div>
@@ -379,6 +370,7 @@ function FindingDetailInner() {
           <FindingLineageView findingId={finding.id} />
         </TabsContent>
       </div>
+      <FindingDistillSheet findingId={id} open={distillOpen} onOpenChange={setDistillOpen} onSaved={load} />
     </Tabs>
   );
 }

@@ -74,6 +74,11 @@ func (q KBQuery) where() (string, []any, int) {
 			conds = append(conds, "e.poc_snippet = ''")
 		}
 	}
+	if sk := strings.TrimSpace(q.SourceKey); sk != "" {
+		args = append(args, sk)
+		n := len(args)
+		conds = append(conds, fmt.Sprintf("(e.origin = $%d OR $%d = ANY(COALESCE(e.source_keys, ARRAY[]::text[])))", n, n))
+	}
 	if len(conds) == 0 {
 		return "TRUE", args, qn
 	}

@@ -36,6 +36,10 @@ import type {
   ExplorationNodePage,
   ExplorationNodeQuery,
   Finding,
+  FindingDistillBatchResult,
+  FindingDistillDraft,
+  FindingDistillPreview,
+  FindingDistillResult,
   FindingAssetTree,
   KBEntry,
   KBEntryDetail,
@@ -1329,6 +1333,7 @@ export const api = {
     actively_exploited?: boolean;
     has_poc?: boolean;
     matched_assets_only?: boolean;
+    source?: string;
     limit?: number;
     offset?: number;
   }) => {
@@ -1340,6 +1345,7 @@ export const api = {
     if (params?.actively_exploited) sp.set("actively_exploited", "1");
     if (params?.has_poc) sp.set("has_poc", "1");
     if (params?.matched_assets_only) sp.set("matched_assets_only", "1");
+    if (params?.source) sp.set("source", params.source);
     sp.set("limit", String(params?.limit ?? 20));
     sp.set("offset", String(params?.offset ?? 0));
     return get<{ items: KBEntry[] | null; total: number }>(`/kb/entries?${sp}`);
@@ -1370,5 +1376,10 @@ export const api = {
   kbSyncSource: (id: number) => post<{ status: string }>(`/kb/sources/${id}/sync`),
   kbSyncRuns: (sourceId?: number) =>
     get<{ runs: KBSyncRun[] | null }>(`/kb/sync-runs${sourceId ? `?source_id=${sourceId}` : ""}`),
-  distillFindingKB: (id: string) => post<{ entry: KBEntry; finding_id: number }>(`/findings/${id}/distill-kb`),
+  distillFindingPreview: (id: string, body?: { extra_notes?: string; target_kb_id?: number }) =>
+    post<FindingDistillPreview>(`/findings/${id}/distill-preview`, body ?? {}),
+  distillFindingKB: (id: string, body?: { mode: string; target_kb_id?: number; draft: FindingDistillDraft; extra_notes?: string }) =>
+    post<FindingDistillResult>(`/findings/${id}/distill-kb`, body),
+  batchDistillFindings: (findingIds: number[]) =>
+    post<FindingDistillBatchResult>("/findings/batch-distill-kb", { finding_ids: findingIds, mode: "auto" }),
 };

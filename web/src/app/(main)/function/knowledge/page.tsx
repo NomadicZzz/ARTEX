@@ -107,6 +107,7 @@ type Filters = {
   actively_exploited: boolean;
   has_poc: boolean;
   matched_assets_only: boolean;
+  source: string;
 };
 
 const emptyFilters: Filters = {
@@ -116,6 +117,7 @@ const emptyFilters: Filters = {
   actively_exploited: false,
   has_poc: false,
   matched_assets_only: false,
+  source: "",
 };
 
 export default function KnowledgePage() {
@@ -297,6 +299,13 @@ function KnowledgeInner() {
             <label className="flex items-center gap-2 text-muted-foreground text-sm">
               <Switch checked={filters.has_poc} onCheckedChange={(v) => apply({ has_poc: v })} />
               仅看含 PoC
+            </label>
+            <label className="flex items-center gap-2 text-muted-foreground text-sm">
+              <Switch
+                checked={filters.source === "finding_distilled"}
+                onCheckedChange={(v) => apply({ source: v ? "finding_distilled" : "" })}
+              />
+              实战漏洞沉淀
             </label>
           </div>
           <Card className="min-w-0 gap-0 overflow-hidden py-0">
@@ -645,7 +654,7 @@ function EntrySheet({ id, onClose, onChanged }: { id: number | null; onClose: ()
               {findings.length > 0 && (
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-sm">关联漏洞</CardTitle>
+                    <CardTitle className="text-sm">关联历史漏洞发现</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-2">
                     {findings.map((f) => (

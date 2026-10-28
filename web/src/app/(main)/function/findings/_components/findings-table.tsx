@@ -213,7 +213,14 @@ export function FindingsTable({
                       <span className="truncate font-medium">{f.name || f.vulnclass || "未分类"}</span>
                     )}
                     <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
-                    <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>
+                    <span className="flex flex-wrap gap-1">
+                      <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>
+                      {f.kb_distilled && (
+                        <Badge variant="outline" className="border-emerald-600/40 text-emerald-700 dark:text-emerald-300">
+                          已沉淀
+                        </Badge>
+                      )}
+                    </span>
                   </div>
                 </TableCell>
                 <TableCell>

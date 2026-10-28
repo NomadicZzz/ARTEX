@@ -327,17 +327,20 @@ type FindingDTO struct {
 	Inherited       bool              `json:"inherited,omitempty"`
 	Assets          []FindingAssetDTO `json:"assets,omitempty"`
 	KBEntries       []FindingKBDTO    `json:"kb_entries,omitempty"`
+	KBDistilled     bool              `json:"kb_distilled,omitempty"`
+	DistillQueued   bool              `json:"distill_queued,omitempty"`
 	TS              string            `json:"ts"`
 }
 
 // FindingKBDTO is a knowledge entry cited by a finding.
 type FindingKBDTO struct {
-	ID         int64  `json:"id"`
-	ExternalID string `json:"external_id,omitempty"`
-	Title      string `json:"title"`
-	Severity   string `json:"severity"`
-	Kind       string `json:"kind"`
-	HasPoC     bool   `json:"has_poc"`
+	ID          int64  `json:"id"`
+	ExternalID  string `json:"external_id,omitempty"`
+	Title       string `json:"title"`
+	Severity    string `json:"severity"`
+	Kind        string `json:"kind"`
+	HasPoC      bool   `json:"has_poc"`
+	FromDistill bool   `json:"from_distill,omitempty"`
 }
 
 // FindingAssetDTO is one asset a finding is anchored to, pre-labelled for display.
@@ -459,14 +462,15 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		FindingID:    i64s(f.ID),
 		TrafficCount: f.TrafficCount, EvidenceVersion: f.EvidenceVersion, ReportEvidenceVersion: f.ReportEvidenceVersion,
 		ReportStale: f.Report != "" && f.EvidenceVersion != f.ReportEvidenceVersion, TrafficBindings: f.TrafficBindings,
-		VulnClass: f.VulnClass,
-		Name:      f.Name,
-		Severity:  f.Severity,
-		Status:    status,
-		Summary:   f.Summary,
-		Evidence:  f.Evidence,
-		Report:    f.Report,
-		TS:        rfc3339(f.CreatedAt),
+		VulnClass:   f.VulnClass,
+		Name:        f.Name,
+		Severity:    f.Severity,
+		Status:      status,
+		Summary:     f.Summary,
+		Evidence:    f.Evidence,
+		Report:      f.Report,
+		KBDistilled: f.KBDistilled,
+		TS:          rfc3339(f.CreatedAt),
 	}
 	d.Assets = findingAssetDTOs(f.AssetIDs, assets)
 	if f.TaskID != nil {

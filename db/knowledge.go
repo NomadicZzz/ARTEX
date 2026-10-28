@@ -105,6 +105,7 @@ type KBQuery struct {
 	Kind              string
 	ActivelyExploited *bool
 	HasPoC            *bool
+	SourceKey         string // origin 或 source_keys 命中其一即可，例如 finding_distilled
 	IncludeDisabled   bool
 	MatchedProducts   []string // non-nil: restrict to entries whose products intersect this set
 	Limit             int

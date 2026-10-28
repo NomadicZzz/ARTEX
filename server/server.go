@@ -231,6 +231,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		go newScheduler(s).Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 		s.kbSync = newKBSyncer(s)
 		agent.KBOnDemand = s.kbSync.FetchCVE
+		agent.DistillFindingToKB = s.distillFindingToKB
 		go s.kbSync.Run(s.ctx)
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
@@ -764,6 +765,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/findings/export", s.findingsExport)
 	s.registerFindingTraffic(mux)
 	mux.HandleFunc("GET /api/exploration/findings/{id}", s.getFinding)
+	mux.HandleFunc("POST /api/findings/batch-distill-kb", s.batchDistillFindingsKB)
+	mux.HandleFunc("POST /api/findings/{id}/distill-preview", s.previewFindingDistill)
 	mux.HandleFunc("POST /api/findings/{id}/distill-kb", s.distillFindingKB)
 	mux.HandleFunc("GET /api/exploration/findings/{id}/lineage", s.findingLineage)
 	mux.HandleFunc("POST /api/exploration/findings/{id}/deepen", s.deepenFinding)
@@ -2099,6 +2102,7 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 		for _, e := range rows {
 			dto.KBEntries = append(dto.KBEntries, FindingKBDTO{
 				ID: e.ID, ExternalID: e.ExternalID, Title: e.Title, Severity: e.Severity, Kind: e.Kind, HasPoC: e.HasPoC,
+				FromDistill: kbFromDistill(e),
 			})
 		}
 	}
@@ -2290,10 +2294,11 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Status    *string `json:"status"`
-		Severity  *string `json:"severity"`
-		Name      *string `json:"name"`
-		VulnClass *string `json:"vulnclass"`
+		Status      *string `json:"status"`
+		Severity    *string `json:"severity"`
+		Name        *string `json:"name"`
+		VulnClass   *string `json:"vulnclass"`
+		AutoDistill *bool   `json:"auto_distill"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
@@ -2303,6 +2308,7 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass")
 		return
 	}
+	var distillQueued bool
 	if body.Status != nil {
 		if !db.ValidFindingStatus(*body.Status) {
 			writeErr(w, 400, "bad status: "+*body.Status)
@@ -2322,6 +2328,10 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		}
 		if !notified && from != *body.Status {
 			log.Printf("[notify] 状态变更事件未登记 finding=%d %s→%s（状态已更新）", id, from, *body.Status)
+		}
+		if *body.Status == db.FindingConfirmed && from != db.FindingConfirmed && s.kbSync != nil && s.autoDistillEnabled(body.AutoDistill) {
+			s.kbSync.EnqueueFindingDistill(id)
+			distillQueued = true
 		}
 	}
 	if body.Severity != nil {
@@ -2370,7 +2380,9 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "finding not found")
 		return
 	}
-	writeJSON(w, 200, findingFromDB(f, s.resolveAssetIDs(f.AssetIDs)))
+	dto := findingFromDB(f, s.resolveAssetIDs(f.AssetIDs))
+	dto.DistillQueued = distillQueued
+	writeJSON(w, 200, dto)
 }
 
 // deleteFinding removes a finding (findings row + originating exploration node).
@@ -3343,6 +3355,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"noa_compaction": s.m.NoaCompactionEnabled(),
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
+		"kb_auto_distill_on_confirm": s.m.pg.GetBool(settingKBAutoDistill, true),
 		"notify_enabled":             s.m.pg.GetBool(settingNotifyEnabled, true),
 		"notify_public_base_url":     notifyPublicBaseURL(s.m.pg),
 		"notify_digest_interval_min": notifyDigestIntervalMin(s.m.pg),
@@ -3413,6 +3426,8 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
 		// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
 		NoaCompaction *bool `json:"noa_compaction"`
+		// 确认漏洞后自动脱敏沉淀。缺省开启；投递时读取，改完即时生效。
+		KBAutoDistill *bool `json:"kb_auto_distill_on_confirm"`
 		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
 		// 不需要重建 agent 或重启。
 		NotifyEnabled    *bool   `json:"notify_enabled"`
@@ -3438,6 +3453,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.NoaCompaction != nil {
 		// 每 run 读的解析器,切换即时对之后启动的 run 生效,无需 applyLLM 重建。
 		if err := s.m.SetNoaCompaction(*req.NoaCompaction); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.KBAutoDistill != nil {
+		if err := s.m.pg.SetBool(settingKBAutoDistill, *req.KBAutoDistill); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

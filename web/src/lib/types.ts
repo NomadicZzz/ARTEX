@@ -605,6 +605,8 @@ export interface Finding {
   inherited?: boolean;
   assets?: FindingAsset[];
   kb_entries?: FindingKBEntry[];
+  kb_distilled?: boolean;
+  distill_queued?: boolean;
   ts: string;
 }
 
@@ -615,6 +617,43 @@ export interface FindingKBEntry {
   severity: string;
   kind: string;
   has_poc: boolean;
+  from_distill?: boolean;
+}
+
+export interface FindingDistillDraft {
+  title: string;
+  kind: string;
+  vulnclass: string;
+  severity: string;
+  products: string[] | null;
+  tags?: string[] | null;
+  summary: string;
+  detection_guide: string;
+  poc_snippet: string;
+  remediation: string;
+  suggested_mode?: string;
+}
+
+export interface FindingDistillPreview {
+  finding_id: number;
+  suggested_mode: string;
+  target_kb_id?: number;
+  linked_kb_entries: FindingKBEntry[] | null;
+  draft: FindingDistillDraft;
+  redacted_traffic_count: number;
+}
+
+export interface FindingDistillResult {
+  finding_id: number;
+  mode?: string;
+  kb_entry_id?: number;
+  entry: KBEntry;
+}
+
+export interface FindingDistillBatchResult {
+  ok: { finding_id: number; kb_entry_id: number; mode: string }[] | null;
+  skipped: { finding_id: number; reason: string }[] | null;
+  errors: { finding_id: number; error: string }[] | null;
 }
 
 // FindingsPage 是发现列表的服务端分页响应。
@@ -1048,6 +1087,8 @@ export interface Settings {
   // worker/主 agent/对话)由 noa 接管上下文压缩,取代内置 compaction;每 run 读一次,对
   // 之后启动的 run 生效。
   noa_compaction?: boolean;
+  // 漏洞状态变为已确认时，后台自动脱敏沉淀到知识库。缺省开启。
+  kb_auto_distill_on_confirm?: boolean;
   // ---- 漏洞 IM 推送（渠道本身是独立资源，见 /api/notify/*，这里只有三项全局配置）----
   notify_enabled?: boolean; // 推送总开关，默认开；用于维护期一键止血
   notify_public_base_url?: string; // 漏洞详情回链的外部访问地址；空=消息不带回链

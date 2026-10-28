@@ -14,6 +14,11 @@ import (
 // so this package does not import the sync engine.
 var KBOnDemand func(ctx context.Context, cveID string) error
 
+// DistillFindingToKB redacts a finding into the knowledge base. The server wires
+// the LLM and the write path. mode is auto, enrich_existing, or new_entry.
+// The callback returns the saved entry id and its nkey.
+var DistillFindingToKB func(ctx context.Context, findingID int64, mode string, targetKBID int64, extraNotes string) (int64, string, error)
+
 var kbCVEPattern = regexp.MustCompile(`(?i)^CVE-\d{4}-\d{4,}$`)
 
 const kbClueNote = "知识库命中只是检测线索。必须在授权目标上真实触发并拿到证据后才能 report_finding，上报时可传 kb_entry_ids。"
@@ -244,6 +249,67 @@ func kbMatchBriefs(matches []db.KBAssetMatch) []map[string]any {
 		})
 	}
 	return out
+}
+
+func (t *ToolSet) distillFindingToKB() actool.CoreTool {
+	return writeTool("distill_finding_to_kb",
+		"把已确认的漏洞脱敏沉淀进知识库，变成可复用的检测线索。误报不要调用。已关联知识条目时优先 enrich_existing，否则 new_entry。",
+		obj(map[string]any{
+			"finding_id":          idp("漏洞 id"),
+			"mode":                str("auto|enrich_existing|new_entry，默认 auto"),
+			"target_kb_id":        idp("enrich_existing 时要补充的知识条目 id"),
+			"bypass_or_key_trick": str("可复用的绕过或关键技巧，写入补充说明"),
+			"remediation_note":    str("修复说明"),
+		}, "finding_id"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.pg == nil {
+				return actool.Errorf("知识库未启用"), nil
+			}
+			if DistillFindingToKB == nil {
+				return actool.Errorf("知识库沉淀未启用"), nil
+			}
+			var a struct {
+				FindingID   json.RawMessage `json:"finding_id"`
+				Mode        string          `json:"mode"`
+				TargetKBID  json.RawMessage `json:"target_kb_id"`
+				Bypass      string          `json:"bypass_or_key_trick"`
+				Remediation string          `json:"remediation_note"`
+			}
+			_ = json.Unmarshal(in, &a)
+			id := pid(a.FindingID)
+			if id <= 0 {
+				return actool.Errorf("finding_id 无效"), nil
+			}
+			f, err := t.pg.GetFinding(id)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if f == nil {
+				return actool.Errorf("漏洞不存在"), nil
+			}
+			if f.Status == db.FindingFalsePositive {
+				return actool.Errorf("误报不沉淀到知识库"), nil
+			}
+			if t.taskID > 0 && (f.TaskID == nil || *f.TaskID != t.taskID) {
+				return actool.Errorf("该漏洞不属于当前任务"), nil
+			}
+			var notes []string
+			if s := strings.TrimSpace(a.Bypass); s != "" {
+				notes = append(notes, "绕过或关键技巧：\n"+s)
+			}
+			if s := strings.TrimSpace(a.Remediation); s != "" {
+				notes = append(notes, "修复说明：\n"+s)
+			}
+			mode := strings.TrimSpace(a.Mode)
+			if mode == "" {
+				mode = "auto"
+			}
+			kbID, nkey, err := DistillFindingToKB(ctx, id, mode, pid(a.TargetKBID), strings.Join(notes, "\n\n"))
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return jsonResult(map[string]any{"finding_id": id, "kb_entry_id": kbID, "nkey": nkey, "mode": mode})
+		})
 }
 
 func assetItemTechs(item assetInputItem) []string {

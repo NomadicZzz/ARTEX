@@ -248,6 +248,7 @@ export default function FindingsPage() {
 
   // 勾选导出:按 finding_id(独立表 id)记选中项,跨页保留。
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set());
+  const [distillBatch, setDistillBatch] = React.useState(false);
   // 导出弹窗状态:范围(当前筛选/全部/选中) × 格式(md 单文件/md 分文件 zip/csv/json)。
   const [exportOpen, setExportOpen] = React.useState(false);
   const [exportScope, setExportScope] = React.useState<"filtered" | "all" | "selected">("filtered");
@@ -606,8 +607,12 @@ export default function FindingsPage() {
       const prev = f.status;
       setFindings((cur) => cur.map((x) => (isSameFinding(x, f) ? { ...x, status: next } : x)));
       try {
-        await api.setFindingStatus(f.finding_id, next);
-        toast.success(`已标记为「${statusMeta("finding", next).label}」`);
+        const updated = await api.setFindingStatus(f.finding_id, next);
+        if (next === "confirmed" && updated.distill_queued) {
+          toast.success("已确认漏洞，正在后台自动脱敏沉淀至知识库");
+        } else {
+          toast.success(`已标记为「${statusMeta("finding", next).label}」`);
+        }
         // refresh stat cards (pending count) and drop the row if it no longer matches the status filter
         api
           .findingStats()
@@ -628,6 +633,28 @@ export default function FindingsPage() {
     },
     [refreshAfterMutation, setFindings, status],
   );
+
+  const batchDistill = React.useCallback(async () => {
+    const ids = [...selectedIds].map((id) => Number(id)).filter((id) => id > 0);
+    if (ids.length === 0) return;
+    const batch = ids.slice(0, 10);
+    setDistillBatch(true);
+    try {
+      const result = await api.batchDistillFindings(batch);
+      const ok = result.ok ?? [];
+      const skipped = result.skipped ?? [];
+      const errors = result.errors ?? [];
+      if (ids.length > 10) toast("一次最多沉淀 10 条，已处理前 10 条");
+      if (ok.length > 0) toast.success(`已沉淀 ${ok.length} 条到知识库`);
+      if (skipped.length > 0) toast(`${skipped.length} 条已跳过`);
+      if (errors.length > 0) toast.error(errors[0]?.error || "部分沉淀失败");
+      void loadFlat();
+    } catch (e) {
+      toast.error(`沉淀失败：${(e as Error).message}`);
+    } finally {
+      setDistillBatch(false);
+    }
+  }, [loadFlat, selectedIds]);
 
   // 行内展开的详细报告缓存按全局稳定行键存。report 是大段 Markdown,列表查询不带它,
   // 故展开时才按 finding_id 单独拉取一次;done 且文本为空 = 该漏洞暂无报告。
@@ -952,6 +979,11 @@ export default function FindingsPage() {
           <div className="ml-auto flex items-center gap-3">
             {selectedIds.size > 0 && (
               <span className="text-xs text-muted-foreground tabular-nums">已选 {selectedIds.size} 条</span>
+            )}
+            {selectedIds.size > 0 && (
+              <Button size="sm" variant="outline" disabled={distillBatch} onClick={() => void batchDistill()}>
+                {distillBatch ? "沉淀中…" : "批量沉淀至知识库"}
+              </Button>
             )}
             <Button size="sm" variant="outline" onClick={openExport}>
               <DownloadIcon /> 导出

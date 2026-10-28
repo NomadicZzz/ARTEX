@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { CpuIcon, FlaskConicalIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import { BookOpenIcon, CpuIcon, FlaskConicalIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,7 @@ export default function SystemSettingsPage() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
+  const [kbAutoDistill, setKbAutoDistill] = React.useState(true);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
 
@@ -60,6 +61,7 @@ export default function SystemSettingsPage() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+    setKbAutoDistill(s.kb_auto_distill_on_confirm !== false);
   }, []);
 
   const saveWorkers = () => {
@@ -123,6 +125,22 @@ export default function SystemSettingsPage() {
       .setSettings({ constraints_inject_planner: v })
       .then(apply)
       .catch(() => setInjectPlanner(!v)); // revert on failure
+  };
+
+  const toggleKbAutoDistill = (v: boolean) => {
+    setKbAutoDistill(v);
+    setSaving(true);
+    api
+      .setSettings({ kb_auto_distill_on_confirm: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v ? "已开启确认后自动沉淀" : "已关闭确认后自动沉淀");
+      })
+      .catch((e) => {
+        setKbAutoDistill(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSaving(false));
   };
 
   const toggleAgentTrafficBinding = (v: boolean) => {
@@ -319,6 +337,31 @@ export default function SystemSettingsPage() {
               checked={agentTrafficBinding}
               disabled={!loaded || saving}
               onCheckedChange={toggleAgentTrafficBinding}
+            />
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <BookOpenIcon className="size-4" />
+              确认后自动沉淀
+            </CardTitle>
+            <CardDescription id="kb-auto-distill-description">
+              默认开启。把漏洞状态改为已确认时，后台会脱敏流量和凭据，并按关联知识条目自动补充或新建实战条目。
+              详情页的手动沉淀不受这个开关影响。单次确认可在请求里用 auto_distill 关闭。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex items-center justify-between gap-4">
+            <Label htmlFor="kb-auto-distill" className="text-sm font-normal text-muted-foreground">
+              {kbAutoDistill ? "已开启 · 确认后后台沉淀" : "已关闭 · 仅手动沉淀"}
+            </Label>
+            <Switch
+              id="kb-auto-distill"
+              aria-describedby="kb-auto-distill-description"
+              checked={kbAutoDistill}
+              disabled={!loaded || saving}
+              onCheckedChange={toggleKbAutoDistill}
             />
           </CardContent>
         </Card>

@@ -1177,10 +1177,49 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "kb" && seg[1] === "sources" && seg[2] && m === "PUT") return { id: Number(seg[2]), ...(b as object) };
   if (seg[0] === "kb" && seg[1] === "sources" && seg[2] && m === "DELETE") return { ok: true };
   if (path === "/kb/sync-runs" && m === "GET") return { runs: [] };
-  if (seg[0] === "findings" && seg[2] === "distill-kb" && m === "POST") {
+  if (path === "/findings/batch-distill-kb" && m === "POST") {
+    const ids = Array.isArray(b.finding_ids) ? b.finding_ids : [];
+    return {
+      ok: ids.slice(0, 10).map((id) => ({ finding_id: Number(id), kb_entry_id: 8, mode: "new_entry" })),
+      skipped: [],
+      errors: [],
+    };
+  }
+  if (seg[0] === "findings" && seg[2] === "distill-preview" && m === "POST") {
     return {
       finding_id: Number(seg[1]),
-      entry: { id: 8, title: "由漏洞沉淀", nkey: `finding:${seg[1]}`, origin: "finding_distilled", kind: "methodology", severity: "high" },
+      suggested_mode: "new_entry",
+      target_kb_id: 0,
+      linked_kb_entries: [],
+      redacted_traffic_count: 0,
+      draft: {
+        title: "由漏洞沉淀",
+        kind: "methodology",
+        vulnclass: "信息泄露",
+        severity: "high",
+        products: [],
+        summary: "脱敏后的检测摘要",
+        detection_guide: "对照同类接口的鉴权与错误回显。",
+        poc_snippet: "",
+        remediation: "",
+        suggested_mode: "new_entry",
+      },
+    };
+  }
+  if (seg[0] === "findings" && seg[2] === "distill-kb" && m === "POST") {
+    const draft = (b.draft ?? {}) as { title?: string };
+    return {
+      finding_id: Number(seg[1]),
+      mode: String(b.mode ?? "new_entry"),
+      kb_entry_id: 8,
+      entry: {
+        id: 8,
+        title: draft.title || "由漏洞沉淀",
+        nkey: `finding:${seg[1]}`,
+        origin: "finding_distilled",
+        kind: "methodology",
+        severity: "high",
+      },
     };
   }
 

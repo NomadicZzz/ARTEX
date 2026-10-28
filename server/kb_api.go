@@ -13,7 +13,6 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/kb"
 )
 
 var builtinKBKeys = map[string]bool{
@@ -67,7 +66,7 @@ func (s *Server) kbSearch(w http.ResponseWriter, r *http.Request) {
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	query := db.KBQuery{
 		Q: q.Get("q"), VulnClass: q.Get("vulnclass"), MinSeverity: q.Get("min_severity"),
-		Kind: q.Get("kind"), Limit: limit, Offset: offset,
+		Kind: q.Get("kind"), SourceKey: q.Get("source"), Limit: limit, Offset: offset,
 	}
 	if p := strings.TrimSpace(q.Get("products")); p != "" {
 		query.Products = splitCSV(p)
@@ -526,62 +525,6 @@ func (s *Server) kbListSyncRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"runs": rows})
-}
-
-func (s *Server) distillFindingKB(w http.ResponseWriter, r *http.Request) {
-	pg := s.kbDB(w)
-	if pg == nil {
-		return
-	}
-	id, ok := kbPathID(w, r)
-	if !ok {
-		return
-	}
-	f, err := pg.GetFinding(id)
-	if err != nil || f == nil {
-		writeErr(w, 404, "漏洞不存在")
-		return
-	}
-	title := f.Name
-	if title == "" {
-		title = f.VulnClass
-	}
-	if title == "" {
-		title = fmt.Sprintf("漏洞 #%d", id)
-	}
-	summary := kb.RedactSensitive(f.Summary)
-	guide := "来自已登记漏洞的沉淀。下面是脱敏后的证据，只作为后续检测线索，不能代替在新目标上的再次触发。\n\n" + clipRunes(kb.RedactSensitive(f.Evidence), 4000)
-	products := []string{}
-	vulnclass := f.VulnClass
-	if fields, err := s.distillKBText(r.Context(), title, summary+"\n"+kb.RedactSensitive(f.Report), guide); err == nil {
-		if fields.Summary != "" {
-			summary = fields.Summary
-		}
-		if fields.DetectionGuide != "" {
-			guide = fields.DetectionGuide
-		}
-		if len(fields.Products) > 0 {
-			products = fields.Products
-		}
-		if fields.VulnClass != "" {
-			vulnclass = fields.VulnClass
-		}
-	}
-	entry := db.KBEntry{
-		NKey: fmt.Sprintf("finding:%d", id), Title: title, Summary: summary, DetectionGuide: guide,
-		Kind: "methodology", Origin: "finding_distilled", Severity: f.Severity, VulnClass: vulnclass,
-		Products: products, SourceKeys: []string{"finding_distilled"}, Enabled: true,
-	}
-	row, _, err := pg.UpsertAndMergeKBEntry(entry)
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
-	if refreshed, err := pg.UpdateKBEntryContent(row.ID, entry); err == nil {
-		row = refreshed
-	}
-	_ = pg.AddFindingKBEntry(id, row.ID)
-	writeJSON(w, 200, map[string]any{"entry": row, "finding_id": id})
 }
 
 type kbSourceInput struct {

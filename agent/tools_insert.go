@@ -667,7 +667,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// node_detail：worker 拿到 intent_id/节点 id 后可查该节点完整详情（配合上面的回看）。
 		t.nodeDetail(),
 		// 知识库只提供检测线索，不能代替 report_finding 的真实触发。
-		t.searchKnowledge(), t.getKnowledgeDetail(), t.matchAssetVulns(),
+		t.searchKnowledge(), t.getKnowledgeDetail(), t.matchAssetVulns(), t.distillFindingToKB(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，
 		// worker 只做单条意图的执行与写回）：list_facts / list_companies / list_worker_traces。
 	}
@@ -691,7 +691,7 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),
-		t.searchKnowledge(), t.getKnowledgeDetail(),
+		t.searchKnowledge(), t.getKnowledgeDetail(), t.distillFindingToKB(),
 	}
 }
 
