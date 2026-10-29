@@ -46,17 +46,19 @@ const DistillSystem = `你是授权安全评估的知识整理助手。根据给
 // first four fields. Finding distillation adds the rest; empty ones stay out of
 // the old JSON so existing callers keep working.
 type DistillFields struct {
-	Summary        string   `json:"summary"`
-	DetectionGuide string   `json:"detection_guide"`
-	Products       []string `json:"products"`
-	VulnClass      string   `json:"vulnclass"`
-	Title          string   `json:"title,omitempty"`
-	Kind           string   `json:"kind,omitempty"`
-	Severity       string   `json:"severity,omitempty"`
-	Tags           []string `json:"tags,omitempty"`
-	PocSnippet     string   `json:"poc_snippet,omitempty"`
-	Remediation    string   `json:"remediation,omitempty"`
-	SuggestedMode  string   `json:"suggested_mode,omitempty"`
+	Summary          string   `json:"summary"`
+	DetectionGuide   string   `json:"detection_guide"`
+	Products         []string `json:"products"`
+	VulnClass        string   `json:"vulnclass"`
+	Title            string   `json:"title,omitempty"`
+	Kind             string   `json:"kind,omitempty"`
+	Severity         string   `json:"severity,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	PocSnippet       string   `json:"poc_snippet,omitempty"`
+	Remediation      string   `json:"remediation,omitempty"`
+	SuggestedMode    string   `json:"suggested_mode,omitempty"`
+	AffectedVersions string   `json:"affected_versions,omitempty"`
+	ExternalID       string   `json:"external_id,omitempty"`
 }
 
 // ParseDistillJSON extracts the object even if the model wrapped it in prose.

@@ -5,7 +5,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
-import { BoxesIcon, BugIcon, CrosshairIcon, LibraryIcon, ListChecksIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import { BoxesIcon, BugIcon, CrosshairIcon, LibraryIcon, ListChecksIcon, SearchIcon, ShieldAlertIcon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
@@ -41,7 +41,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { TablePagination } from "@/components/table-pagination";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { KBEntry, KBEntryDetail, KBSource, KBStats, KBSyncRun } from "@/lib/types";
+import type { KBEntry, KBEntryDetail, KBReportParseResp, KBSource, KBStats, KBSyncRun } from "@/lib/types";
 
 const CLUE = "命中只是检测线索。必须真实触发并取得证据后才能记为漏洞。验证任务创建后保持暂停，确认后才会开始。";
 
@@ -851,54 +851,417 @@ function EntryDialog({
   );
 }
 
+const REPORT_EXTS = [".pdf", ".docx", ".html", ".htm", ".md", ".markdown", ".txt", ".json"];
+const REPORT_UPLOAD_LIMIT = 20 * 1024 * 1024;
+
+type ReportDraft = {
+  id: string;
+  selected: boolean;
+  open: boolean;
+  entry: KBEntry;
+  productsText: string;
+};
+
+function reportKindLabel(kind: string) {
+  if (kind === "poc") return "PoC";
+  if (kind === "checklist") return "检查清单";
+  if (kind === "cve") return "漏洞";
+  return "方法论";
+}
+
+function splitProducts(value: string) {
+  return value
+    .split(/[,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function acceptReportFiles(list: FileList | File[] | null): File[] {
+  if (!list) return [];
+  return Array.from(list).filter((file) => REPORT_EXTS.some((ext) => file.name.toLowerCase().endsWith(ext)));
+}
+
+function draftsFrom(entries: KBReportParseResp["entries"]): ReportDraft[] {
+  return (entries ?? []).map((entry, index) => ({
+    id: `${entry.nkey || "draft"}-${index}`,
+    selected: true,
+    open: false,
+    entry: {
+      ...entry,
+      products: entry.products ?? [],
+      severity: entry.severity || "info",
+      kind: entry.kind || "methodology",
+      origin: entry.origin || "manual",
+      distilled: entry.distilled ?? true,
+      enabled: entry.enabled ?? true,
+    },
+    productsText: (entry.products ?? []).join(", "),
+  }));
+}
+
 function ImportDialog({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }) {
-  const [format, setFormat] = React.useState("markdown");
-  const [content, setContent] = React.useState("");
+  const [mode, setMode] = React.useState("upload");
+  const [markdown, setMarkdown] = React.useState("");
+  const [jsonText, setJsonText] = React.useState("");
+  const [useLLM, setUseLLM] = React.useState(true);
+  const [files, setFiles] = React.useState<File[]>([]);
+  const [dragOver, setDragOver] = React.useState(false);
+  const [parsing, setParsing] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
+  const [parsed, setParsed] = React.useState(false);
+  const [parsedNames, setParsedNames] = React.useState("");
+  const [drafts, setDrafts] = React.useState<ReportDraft[]>([]);
+  const fileRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    if (open) return;
+    setMarkdown("");
+    setJsonText("");
+    setFiles([]);
+    setParsing(false);
+    setImporting(false);
+    setParsed(false);
+    setParsedNames("");
+    setDrafts([]);
+    setDragOver(false);
+  }, [open]);
+
+  const selectedCount = drafts.filter((d) => d.selected).length;
+
+  const addFiles = (list: FileList | null) => {
+    const picked = Array.from(list ?? []);
+    const accepted = acceptReportFiles(picked);
+    if (picked.length > 0 && accepted.length === 0) {
+      toast.error("仅支持 pdf、docx、html、md、txt、json");
+      return;
+    }
+    const next = [...files, ...accepted];
+    const total = next.reduce((sum, file) => sum + file.size, 0);
+    if (total > REPORT_UPLOAD_LIMIT) {
+      toast.error("单次上传不超过 20MB");
+      return;
+    }
+    setFiles(next);
+    setParsed(false);
+    setDrafts([]);
+  };
+
+  const parseReport = async () => {
+    if (files.length === 0) {
+      toast.error("请先选择报告文件");
+      return;
+    }
+    setParsing(true);
+    try {
+      const res = await api.parseKBReportFiles(files, useLLM);
+      const next = draftsFrom(res.entries);
+      setDrafts(next);
+      setParsedNames((res.files_processed ?? files.map((file) => file.name)).join("、") || files.map((file) => file.name).join("、"));
+      setParsed(true);
+      if (next.length === 0) toast("未拆解出候选知识条目");
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const importSelected = async () => {
+    const selected = drafts.filter((d) => d.selected);
+    if (selected.length === 0) {
+      toast.error("请至少选择一条");
+      return;
+    }
+    setImporting(true);
+    try {
+      const res = await api.kbImport({
+        entries: selected.map((d) => ({
+          ...d.entry,
+          products: splitProducts(d.productsText),
+          origin: d.entry.origin || "manual",
+          distilled: d.entry.distilled ?? true,
+          enabled: true,
+        })),
+      });
+      toast.success(`导入 ${res.imported} 条`);
+      onDone();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const importPasted = async () => {
+    const pasted = mode === "json" ? jsonText : markdown;
+    if (!pasted.trim()) {
+      toast.error("请粘贴内容");
+      return;
+    }
+    setImporting(true);
+    try {
+      const res = await api.kbImport({ format: mode === "json" ? "json" : "markdown", content: pasted });
+      toast.success(`导入 ${res.imported} 条`);
+      onDone();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const patchDraft = (id: string, patch: Partial<ReportDraft>) => {
+    setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+  };
+
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>导入 Markdown / JSON</DialogTitle>
-          <DialogDescription>Markdown 按一级标题拆成方法条目，JSON 按条目数组写入。</DialogDescription>
+          <DialogTitle>导入知识</DialogTitle>
+          <DialogDescription>上传渗透报告拆解为知识条目，或粘贴 Markdown / JSON。</DialogDescription>
         </DialogHeader>
-        <FieldGroup>
-          <Field>
-            <FieldLabel>格式</FieldLabel>
-            <Select value={format} onValueChange={setFormat}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="markdown">Markdown（按一级标题拆分）</SelectItem>
-                <SelectItem value="json">JSON</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="kb-import-content">内容</FieldLabel>
-            <Textarea id="kb-import-content" value={content} onChange={(e) => setContent(e.target.value)} className="min-h-40" />
-          </Field>
-        </FieldGroup>
+        <Tabs value={mode} onValueChange={setMode}>
+          <TabsList className="w-full">
+            <TabsTrigger value="upload">上传报告</TabsTrigger>
+            <TabsTrigger value="markdown">粘贴 Markdown</TabsTrigger>
+            <TabsTrigger value="json">粘贴 JSON</TabsTrigger>
+          </TabsList>
+          <TabsContent value="upload" className="mt-3">
+            {parsed ? (
+              <div id="kb-report-preview" className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm">
+                    已从《{parsedNames}》中拆解出 {drafts.length} 条候选知识条目（已选 {selectedCount} 条）
+                  </p>
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => setDrafts((prev) => prev.map((d) => ({ ...d, selected: true })))}>
+                      全选
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setDrafts((prev) => prev.map((d) => ({ ...d, selected: false })))}>
+                      取消全选
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setParsed(false);
+                        setDrafts([]);
+                        setFiles([]);
+                        setParsedNames("");
+                      }}
+                    >
+                      重新上传
+                    </Button>
+                  </div>
+                </div>
+                {drafts.length === 0 ? (
+                  <p className="rounded-lg border bg-muted/30 px-3 py-6 text-center text-sm text-muted-foreground">没有可导入的条目</p>
+                ) : (
+                  <div className="space-y-2">
+                    {drafts.map((draft) => (
+                      <ReportDraftCard
+                        key={draft.id}
+                        draft={draft}
+                        onToggle={(selected) => patchDraft(draft.id, { selected })}
+                        onOpen={() => patchDraft(draft.id, { open: !draft.open })}
+                        onEntry={(patch) => patchDraft(draft.id, { entry: { ...draft.entry, ...patch } })}
+                        onProducts={(productsText) => patchDraft(draft.id, { productsText })}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragOver(true);
+                  }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOver(false);
+                    addFiles(e.dataTransfer.files);
+                  }}
+                  className={cn(
+                    "flex min-h-28 w-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-6 text-sm",
+                    dragOver ? "border-primary bg-muted" : "border-border bg-muted/30",
+                  )}
+                >
+                  <UploadIcon className="size-4 text-muted-foreground" />
+                  <span>拖入或点击选择 .pdf / .docx / .html / .md / .txt / .json，可一次选择多个文件</span>
+                </button>
+                <input
+                  id="kb-report-file"
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  accept={REPORT_EXTS.join(",")}
+                  className="hidden"
+                  onChange={(e) => {
+                    addFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                {files.length > 0 && (
+                  <ul className="space-y-1 text-sm text-muted-foreground">
+                    {files.map((file) => (
+                      <li key={`${file.name}-${file.size}-${file.lastModified}`}>{file.name}</li>
+                    ))}
+                  </ul>
+                )}
+                <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2">
+                  <label htmlFor="kb-report-use-llm" className="text-sm">
+                    启用 AI 自动拆解漏洞与方法论（自动脱敏客户域名/IP/凭据）
+                  </label>
+                  <Switch id="kb-report-use-llm" checked={useLLM} onCheckedChange={setUseLLM} />
+                </div>
+                {parsing && <p className="text-sm text-muted-foreground">正在提取文档结构并由 AI 脱敏拆解知识条目...</p>}
+              </div>
+            )}
+          </TabsContent>
+          <TabsContent value="markdown" className="mt-3">
+            <Field>
+              <FieldLabel htmlFor="kb-import-content">Markdown 按一级标题拆成方法条目</FieldLabel>
+              <Textarea id="kb-import-content" value={markdown} onChange={(e) => setMarkdown(e.target.value)} className="min-h-40" />
+            </Field>
+          </TabsContent>
+          <TabsContent value="json" className="mt-3">
+            <Field>
+              <FieldLabel htmlFor="kb-import-json">JSON 按条目数组写入</FieldLabel>
+              <Textarea id="kb-import-json" value={jsonText} onChange={(e) => setJsonText(e.target.value)} className="min-h-40 font-mono" />
+            </Field>
+          </TabsContent>
+        </Tabs>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             取消
           </Button>
-          <Button
-            onClick={async () => {
-              try {
-                const res = await api.kbImport({ format, content });
-                toast.success(`导入 ${res.imported} 条`);
-                onDone();
-              } catch (e) {
-                toast.error((e as Error).message);
-              }
-            }}
-          >
-            导入
-          </Button>
+          {mode === "upload" && parsed ? (
+            <Button id="kb-report-confirm" disabled={importing || selectedCount === 0} onClick={() => void importSelected()}>
+              确认导入选中条目 ({selectedCount})
+            </Button>
+          ) : mode === "upload" ? (
+            <Button id="kb-report-parse" disabled={parsing || files.length === 0} onClick={() => void parseReport()}>
+              {parsing ? "正在提取文档结构并由 AI 脱敏拆解知识条目..." : "解析并拆解报告"}
+            </Button>
+          ) : (
+            <Button disabled={importing} onClick={() => void importPasted()}>
+              导入
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ReportDraftCard({
+  draft,
+  onToggle,
+  onOpen,
+  onEntry,
+  onProducts,
+}: {
+  draft: ReportDraft;
+  onToggle: (selected: boolean) => void;
+  onOpen: () => void;
+  onEntry: (patch: Partial<KBEntry>) => void;
+  onProducts: (value: string) => void;
+}) {
+  const products = splitProducts(draft.productsText);
+  return (
+    <div data-testid="kb-report-card" className="rounded-lg border bg-muted/30 p-3">
+      <div className="flex items-start gap-2">
+        <Checkbox checked={draft.selected} onCheckedChange={(value) => onToggle(value === true)} aria-label={`选择 ${draft.entry.title}`} />
+        {draft.entry.severity && draft.entry.severity !== "info" ? (
+          <StatusBadge domain="severity" value={draft.entry.severity} />
+        ) : (
+          <Badge variant="outline">信息</Badge>
+        )}
+        <span className="text-xs text-muted-foreground">{reportKindLabel(draft.entry.kind)}</span>
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">{draft.entry.title}</div>
+          {products.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {products.map((product) => (
+                <Badge key={product} variant="secondary">
+                  {product}
+                </Badge>
+              ))}
+            </div>
+          )}
+          {draft.entry.summary && <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{draft.entry.summary}</p>}
+        </div>
+        <Button type="button" size="sm" variant="ghost" onClick={onOpen}>
+          {draft.open ? "收起" : "展开编辑"}
+        </Button>
+      </div>
+      {draft.open && (
+        <div className="mt-3 grid gap-3">
+          <Field>
+            <FieldLabel>标题</FieldLabel>
+            <Input value={draft.entry.title} onChange={(e) => onEntry({ title: e.target.value })} />
+          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field>
+              <FieldLabel>类型</FieldLabel>
+              <Select value={draft.entry.kind || "methodology"} onValueChange={(kind) => onEntry({ kind })}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="poc">PoC</SelectItem>
+                    <SelectItem value="methodology">方法论</SelectItem>
+                    <SelectItem value="checklist">检查清单</SelectItem>
+                    <SelectItem value="cve">漏洞</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel>等级</FieldLabel>
+              <Select value={draft.entry.severity || "info"} onValueChange={(severity) => onEntry({ severity })}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="info">提示</SelectItem>
+                    <SelectItem value="low">低危</SelectItem>
+                    <SelectItem value="medium">中危</SelectItem>
+                    <SelectItem value="high">高危</SelectItem>
+                    <SelectItem value="critical">严重</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <Field>
+            <FieldLabel>产品（逗号分隔）</FieldLabel>
+            <Input value={draft.productsText} onChange={(e) => onProducts(e.target.value)} />
+          </Field>
+          <Field>
+            <FieldLabel>检测思路</FieldLabel>
+            <Textarea value={draft.entry.detection_guide ?? ""} onChange={(e) => onEntry({ detection_guide: e.target.value })} className="min-h-24" />
+          </Field>
+          <Field>
+            <FieldLabel>PoC</FieldLabel>
+            <Textarea value={draft.entry.poc_snippet ?? ""} onChange={(e) => onEntry({ poc_snippet: e.target.value })} className="min-h-24 font-mono" />
+          </Field>
+          <Field>
+            <FieldLabel>修复建议</FieldLabel>
+            <Textarea value={draft.entry.remediation ?? ""} onChange={(e) => onEntry({ remediation: e.target.value })} className="min-h-20" />
+          </Field>
+        </div>
+      )}
+    </div>
   );
 }
 

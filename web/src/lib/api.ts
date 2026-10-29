@@ -43,6 +43,7 @@ import type {
   FindingAssetTree,
   KBEntry,
   KBEntryDetail,
+  KBReportParseResp,
   KBSource,
   KBStats,
   KBSyncRun,
@@ -120,13 +121,17 @@ function getToken(): string | null {
   return localStorage.getItem("artex_token");
 }
 
+function isFormData(body: BodyInit | null | undefined): body is FormData {
+  return typeof FormData !== "undefined" && body instanceof FormData;
+}
+
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (MOCK) return mockHandle<T>(init?.method ?? "GET", path, init?.body ?? null);
   const token = getToken();
   const r = await fetch(`/api${path}`, {
     ...init,
     headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !isFormData(init.body) ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers as Record<string, string> | undefined),
     },
@@ -1361,6 +1366,12 @@ export const api = {
     }),
   kbImport: (body: { format?: string; content?: string; entries?: Partial<KBEntry>[] }) =>
     post<{ imported: number; ids: number[] | null }>("/kb/import", body),
+  parseKBReportFiles: (files: File[], useLLM: boolean) => {
+    const body = new FormData();
+    for (const file of files) body.append("files", file);
+    body.append("use_llm", useLLM ? "true" : "false");
+    return http<KBReportParseResp>("/kb/import/parse-file", { method: "POST", body });
+  },
   kbSources: () => get<{ sources: KBSource[] | null }>("/kb/sources"),
   kbCreateSource: (body: {
     key: string;

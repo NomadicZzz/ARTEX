@@ -885,6 +885,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/kb/entries/{id}", s.kbDeleteEntry)
 	mux.HandleFunc("POST /api/kb/entries/{id}/distill", s.kbDistillEntry)
 	mux.HandleFunc("POST /api/kb/entries/{id}/create-verify-task", s.kbCreateVerifyTask)
+	mux.HandleFunc("POST /api/kb/import/parse-file", s.kbParseReportFile)
 	mux.HandleFunc("POST /api/kb/import", s.kbImport)
 	mux.HandleFunc("GET /api/kb/sources", s.kbListSources)
 	mux.HandleFunc("POST /api/kb/sources", s.kbCreateSource)

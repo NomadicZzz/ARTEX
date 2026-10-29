@@ -562,6 +562,14 @@ export interface KBStats {
   matched_assets: number;
 }
 
+export interface KBReportParseResp {
+  files_processed: string[] | null;
+  format: string;
+  chunk_count: number;
+  used_llm: boolean;
+  entries: KBEntry[] | null;
+}
+
 export type Severity = "critical" | "high" | "medium" | "low";
 
 // 漏洞处置状态:待处理 / 处理中 / 已确认 / 已处理 / 已修复 / 误报 / 忽略 / 重复 / 风险接受。

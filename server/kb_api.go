@@ -333,6 +333,12 @@ func (s *Server) kbImport(w http.ResponseWriter, r *http.Request) {
 			e.Kind = "methodology"
 		}
 		e.Enabled = true
+		// A distilled report draft with a guide and products stays locked so a
+		// later CVE sync cannot replace the prose. Origin manual already locks;
+		// this covers a caller that set distilled before prepareKBEntry runs.
+		if e.Distilled && strings.TrimSpace(e.DetectionGuide) != "" && len(e.Products) > 0 {
+			e.ContentLocked = true
+		}
 		row, _, err := pg.UpsertAndMergeKBEntry(e)
 		if err != nil {
 			continue

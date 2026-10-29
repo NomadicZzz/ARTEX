@@ -1134,6 +1134,54 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     if (ids.length === 0) throw new Error("至少选择一个资产");
     return { task_id: "9001", paused: true, message: "验证任务已创建并暂停。请到任务页确认后手动开始，系统不会自动发包。" };
   }
+  if (path === "/kb/import/parse-file" && m === "POST") {
+    return {
+      files_processed: ["示例渗透报告.docx"],
+      format: "docx",
+      chunk_count: 2,
+      used_llm: false,
+      entries: [
+        {
+          id: 0,
+          nkey: "method:spring-boot-actuator-heapdump",
+          external_id: "",
+          origin: "manual",
+          kind: "methodology",
+          vulnclass: "info_leak",
+          severity: "high",
+          actively_exploited: false,
+          products: ["spring-boot"],
+          tags: ["actuator", "heapdump"],
+          title: "Spring Boot Actuator Heapdump 敏感信息泄露排查",
+          summary: "未授权访问 heapdump 可能泄露内存中的凭据与配置。",
+          detection_guide: "在授权目标上请求 /actuator/heapdump，确认是否直接返回堆转储。",
+          poc_snippet: "GET /actuator/heapdump HTTP/1.1\nHost: <target-host>",
+          remediation: "关闭 heapdump 端点，或仅对管理网开放并要求认证。",
+          distilled: true,
+          enabled: true,
+        },
+        {
+          id: 0,
+          nkey: "poc:sql-injection-login",
+          external_id: "",
+          origin: "manual",
+          kind: "poc",
+          vulnclass: "sqli",
+          severity: "critical",
+          actively_exploited: false,
+          products: ["mysql"],
+          tags: ["sqli"],
+          title: "登录接口 SQL 注入验证",
+          summary: "用户名参数被拼进查询，报错或布尔差异可判断注入点。",
+          detection_guide: "对比正常用户名与带引号的用户名，观察响应差异。不要使用破坏性语句。",
+          poc_snippet: "POST /login HTTP/1.1\nHost: <target-host>\n\nusername=admin'",
+          remediation: "使用参数化查询，并关闭数据库错误回显。",
+          distilled: true,
+          enabled: true,
+        },
+      ],
+    };
+  }
   if (path === "/kb/import" && m === "POST") return { imported: 1, ids: [9] };
   if (path === "/kb/sources" && m === "POST") {
     return {

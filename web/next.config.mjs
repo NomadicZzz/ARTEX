@@ -18,6 +18,12 @@ const nextConfig = {
   compiler: {
     removeConsole: process.env.NODE_ENV === "production",
   },
+  // 开发时 /api 反代默认 30 秒、请求体 10MB。报告 AI 拆解会等模型，后端上限是 3 分钟、上传上限 20MB。
+  // 到点不断开会被 Next 掐成 “socket hang up”，页面只看到 POST /kb/import/parse-file: 500。
+  experimental: {
+    proxyTimeout: 240000,
+    proxyClientMaxBodySize: 20 * 1024 * 1024,
+  },
   ...(isExport
     ? {
         // 纯静态导出：无 Node 运行时；图片不经优化；每个路由产出 <route>/index.html。
