@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/kb"
 )
 
 var builtinKBKeys = map[string]bool{
@@ -488,6 +490,24 @@ func (s *Server) kbDeleteSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// kbPurgeHollow physically deletes synced entries that only restate a public
+// advisory (no PoC, not KEV, boilerplate guide, cited by no finding).
+func (s *Server) kbPurgeHollow(w http.ResponseWriter, r *http.Request) {
+	pg := s.kbDB(w)
+	if pg == nil {
+		return
+	}
+	n, err := pg.PurgeHollowSyncedCVEs(db.KBHollowFilter{HollowGuides: kb.DefaultHollowGuides()})
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := pg.RefreshAllKBSourceCounts(); err != nil {
+		log.Printf("[kb] 清理后刷新源计数失败: %v", err)
+	}
+	writeJSON(w, 200, map[string]any{"purged_count": n})
+}
+
 func (s *Server) kbSyncSource(w http.ResponseWriter, r *http.Request) {
 	pg := s.kbDB(w)
 	if pg == nil {
@@ -556,6 +576,7 @@ func publicKBSource(s db.KBSource) map[string]any {
 	}
 	return map[string]any{
 		"id": s.ID, "key": s.Key, "name": s.Name, "kind": s.Kind, "enabled": s.Enabled,
+		"enrich_only":       kb.IsEnrichOnlySource(s),
 		"sync_interval_sec": s.SyncIntervalSec, "config": json.RawMessage(raw), "api_key_set": set,
 		"cursor": s.Cursor, "last_sync_at": s.LastSyncAt, "last_status": s.LastStatus,
 		"last_error": s.LastError, "entry_count": s.EntryCount, "builtin": builtinKBKeys[s.Key],

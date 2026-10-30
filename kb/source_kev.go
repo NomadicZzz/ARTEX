@@ -57,9 +57,9 @@ func ParseKEV(body []byte, sourceKey string) (drafts []Draft, version string, er
 		if title == "" {
 			title = cve
 		}
-		guide := "该条目位于 CISA KEV，表示已有在野利用。检测时对照受影响产品与版本做授权验证，命中本身不是漏洞证据。"
+		guide := GuideKEV
 		if v.KnownRansomwareCampaignUse == "Known" {
-			guide += " KEV 标注已知勒索利用。"
+			guide += GuideKEVRansomware
 		}
 		drafts = append(drafts, Draft{
 			ExternalID:        cve,

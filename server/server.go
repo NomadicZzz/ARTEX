@@ -892,6 +892,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/kb/sources/{id}", s.kbUpdateSource)
 	mux.HandleFunc("DELETE /api/kb/sources/{id}", s.kbDeleteSource)
 	mux.HandleFunc("POST /api/kb/sources/{id}/sync", s.kbSyncSource)
+	mux.HandleFunc("POST /api/kb/purge-hollow", s.kbPurgeHollow)
 	mux.HandleFunc("GET /api/kb/sync-runs", s.kbListSyncRuns)
 
 	mux.HandleFunc("GET /api/sync/scopesentry/status", s.syncSSStatus)

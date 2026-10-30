@@ -632,7 +632,7 @@ func (s *Server) reseedMainAgentPrompt() {
 // 找回。settings flag 守卫 → 只做一次。全新库无需处理(SeedPromptIfEmpty 已 seed 最新默认)。与
 // reseedGoalsPrompt 完全同构。
 func (s *Server) reseedPlannerPrompt() {
-	const flag = "planner_prompt_kb_v3"
+	const flag = "planner_prompt_kb_v4"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -653,7 +653,7 @@ func (s *Server) reseedPlannerPrompt() {
 		log.Printf("[prompts] planner 提示词重刷为新默认失败: %v", err)
 		return
 	}
-	log.Printf("[prompts] planner 提示词已追加新默认版本(精简重构+克制降级去重+深度优先+否定复核上界,一次性)")
+	log.Printf("[prompts] planner 提示词已追加新默认版本(知识库先内后外+实战沉淀优先,一次性)")
 }
 
 // reseedWorkerPrompt 把 worker 提示词刷成【当前代码默认】——默认正文 record_fact 段删掉了「否定类结论
@@ -662,7 +662,7 @@ func (s *Server) reseedPlannerPrompt() {
 // SeedPromptIfEmpty 首插入only,旧库已有版本收不到,故用版本管理【追加一个新版本】并切过去,旧版本仍保留在历史里可找回。
 // settings flag 守卫 → 只做一次。全新库无需处理。与 reseedGoalsPrompt 完全同构。
 func (s *Server) reseedWorkerPrompt() {
-	const flag = "worker_prompt_kb_v5"
+	const flag = "worker_prompt_kb_v6"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -683,10 +683,10 @@ func (s *Server) reseedWorkerPrompt() {
 		log.Printf("[prompts] worker 提示词重刷为新默认失败: %v", err)
 		return
 	}
-	log.Printf("[prompts] worker 提示词已追加新默认版本(查上下文段收敛为 list_assets/list_findings,去掉 list_facts/node_detail/asset_neighbors,一次性)")
+	log.Printf("[prompts] worker 提示词已追加新默认版本(知识库先内后外+联网验证后反哺,一次性)")
 }
 
-func (s *Server) reseedPentestPrompt() { s.reseedAgentPrompt("pentest_prompt_kb_v1", "pentest") }
+func (s *Server) reseedPentestPrompt() { s.reseedAgentPrompt("pentest_prompt_kb_v2", "pentest") }
 
 func (s *Server) reseedAutoPrompt() { s.reseedAgentPrompt("auto_prompt_kb_v1", "auto") }
 

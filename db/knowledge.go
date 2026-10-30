@@ -91,6 +91,7 @@ type KBSyncRun struct {
 	FetchedCount  int        `json:"fetched_count"`
 	UpsertedCount int        `json:"upserted_count"`
 	MergedCount   int        `json:"merged_count"`
+	SkippedCount  int        `json:"skipped_count"`
 	Error         string     `json:"error"`
 	StartedAt     time.Time  `json:"started_at"`
 	FinishedAt    *time.Time `json:"finished_at,omitempty"`
@@ -716,6 +717,100 @@ func updateKBEntry(tx *sql.Tx, e KBEntry) error {
 	return err
 }
 
+// ExistingKBRefs reports which of refs already resolve to a local entry. A ref
+// matches a row's nkey, its external_id, or one of its aliases, so a GHSA or AVD
+// row found by another feed still counts as present.
+func (d *DB) ExistingKBRefs(refs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	cleaned := make([]string, 0, len(refs))
+	seen := map[string]bool{}
+	for _, r := range refs {
+		r = utf8Clean(strings.TrimSpace(r))
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		cleaned = append(cleaned, r)
+	}
+	if len(cleaned) == 0 {
+		return out, nil
+	}
+	arr := pgTextArray(cleaned)
+	rows, err := d.Query(`SELECT nkey, external_id, array_to_json(aliases)::text FROM kb_entries
+		WHERE nkey = ANY($1::text[]) OR external_id = ANY($1::text[]) OR aliases && $1::text[]`, arr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nkey, ext, aliases string
+		if err := rows.Scan(&nkey, &ext, &aliases); err != nil {
+			return nil, err
+		}
+		for _, candidate := range append([]string{nkey, ext}, decodeJSONStrings(aliases)...) {
+			candidate = strings.TrimSpace(candidate)
+			if candidate != "" && seen[candidate] {
+				out[candidate] = true
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
+// KBHollowFilter narrows PurgeHollowSyncedCVEs. Zero values keep the default
+// (empty or boilerplate guide), which is what the syncer and the API use.
+type KBHollowFilter struct {
+	// HollowGuides are detection guides that carry no signal, e.g. the
+	// boilerplate each public feed stamps on every row. Empty means only a
+	// blank guide counts as hollow.
+	HollowGuides []string
+}
+
+// PurgeHollowSyncedCVEs physically deletes synced entries that carry no PoC, are
+// not known-exploited, have nothing but boilerplate as a detection guide, and are
+// not cited by any finding. It returns the number of rows removed.
+//
+// kb_sources.entry_count is stale after a purge; callers that display counts
+// should refresh the sources.
+func (d *DB) PurgeHollowSyncedCVEs(filter KBHollowFilter) (int64, error) {
+	guides := []string{""}
+	seen := map[string]bool{"": true}
+	for _, g := range filter.HollowGuides {
+		g = strings.TrimSpace(g)
+		if g == "" || seen[g] {
+			continue
+		}
+		seen[g] = true
+		guides = append(guides, g)
+	}
+	res, err := d.Exec(`DELETE FROM kb_entries e
+		WHERE e.origin = 'synced'
+		  AND e.actively_exploited = false
+		  AND COALESCE(BTRIM(e.poc_snippet), '') = ''
+		  AND BTRIM(COALESCE(e.detection_guide, '')) = ANY($1::text[])
+		  AND e.content_locked = false
+		  AND NOT EXISTS (
+		      SELECT 1 FROM findings f
+		      WHERE EXISTS (
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(f.kb_entry_ids, '[]'::jsonb)) elem
+		          WHERE CASE WHEN jsonb_typeof(elem) = 'number' THEN (elem #>> '{}')::bigint END = e.id
+		      )
+		  )`, pgTextArray(guides))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// RefreshAllKBSourceCounts recomputes entry_count for every configured source.
+func (d *DB) RefreshAllKBSourceCounts() error {
+	_, err := d.Exec(`UPDATE kb_sources s SET entry_count = (
+		SELECT count(*) FROM kb_entries e WHERE s.key = ANY(e.source_keys)
+	)`)
+	return err
+}
+
 // UpdateKBEntryContent replaces editable fields and locks them against sync.
 func (d *DB) UpdateKBEntryContent(id int64, in KBEntry) (KBEntry, error) {
 	cur, err := d.GetKBEntry(id)
@@ -903,10 +998,9 @@ func (d *DB) SearchKBEntries(q KBQuery) ([]KBEntry, int, error) {
 	}
 	rows, err := d.Query(fmt.Sprintf(`SELECT `+kbSelectCols+`
 		FROM kb_entries e WHERE %s
-		ORDER BY e.actively_exploited DESC, (e.poc_snippet <> '') DESC,
-			CASE lower(e.severity) WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 WHEN 'info' THEN 1 ELSE 0 END DESC,
+		ORDER BY %s,
 			%s DESC, e.published_at DESC NULLS LAST, e.id DESC
-		LIMIT $%d OFFSET $%d`, where, rank, len(args)-1, len(args)), args...)
+		LIMIT $%d OFFSET $%d`, where, kbTierOrder, rank, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}

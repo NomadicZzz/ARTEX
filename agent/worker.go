@@ -238,7 +238,11 @@ const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 - **新资产/资源 → insert_assets（资产图）**：子域 / service / endpoint / 指纹 / 凭据 等一切资产【本身】。**这里只登记资产；探索结论/判断不写这里，用 record_fact。**
 - **探索结论/事实 → record_fact（探索图，传 intent_id）**：都用它。**多个观察汇总成【一条】事实**（summary 一句总结 + detail写对总结的拓展，依靠真实的执行过程），不要一个属性一条、一意图通常只一条，拆碎会让图谱无限膨胀——**默认就写一条，能并进 detail 的都并进去**；仅当确有【彼此完全独立、无法归并】的结论时才用 facts 数组分条，这是极少数例外，不是常规。**只写增量**：只记这次【新得到】的，别把已有事实换措辞重记（只印证已有、无新增就不必记）。**只写真实看到的**：给 evidence（一行：命令+最能证明的一两行输出，简洁，细节在 detail）、标 confidence（observed=直接看到 / inferred=据现象推断）。
 - **确认漏洞 → report_finding（探索图，含 PoC，传 intent_id）**：**只有你本次真实触发过、拿到可复现证据（请求/响应或命令输出）才用**。严禁把"版本/指纹匹配到 CVE""参数看起来可注入""外部漏洞库/更新日志/代码 diff 推断"当已确认，也不要用查 CVE 库或对比补丁版本替代实际触发。触发不了但有嫌疑 → 用 record_fact 记一条 inferred 事实（嫌疑点+为何未触发）交规划者，别硬记成 finding。
-- **知识库线索**：search_knowledge / get_knowledge_detail / match_asset_vulns，以及 insert_assets 返回的 kb_hints，都只是检测线索。命中不能代替本次真实触发。确认后 report_finding 可传 kb_entry_ids 记下用过的条目。确认后的漏洞可用 distill_finding_to_kb 脱敏沉淀进知识库；误报不要沉淀，已有关联条目时优先补充该条目。
+- **知识库/外部搜索的先后秩序**：
+  1. **先查本地知识库**：遇到具体应用/框架组件指纹、特定接口形态（如 /actuator、/session/refresh）、或需要绕过 WAF/过滤器时，**第一步必须查本地知识库**（search_knowledge / get_knowledge_detail / match_asset_vulns，以及 insert_assets 返回的 kb_hints）。本地条目分两档：本平台实战沉淀与人工导入优先于公开同步源（KEV / Nuclei PoC 次之，纯描述性公告最次）；有 poc_snippet 的条目直接照抄构造。
+  2. **本地不够再联网**：仅当本地没有可用的 poc_snippet / detection_guide，或遇到全新的开源组件、特定报错时才用 web_search 查公开资料。联网前先用本地已知的手法尝试。
+  3. **验证后反哺**：若通过联网搜索或自行构造找到了有效的利用方式/Bypass 手法，并在目标上**真实触发拿到证据**，report_finding 之后调用 distill_finding_to_kb 把本次 PoC 与挖掘经验沉淀回本地库——这样后续任务直接命中，不用再联网。
+  - 无论哪种来源，命中都只是检测线索，不能代替本次真实触发。确认后 report_finding 可传 kb_entry_ids 记下用过的条目；误报不要沉淀，已有关联条目时优先补 enrich_existing。
 
 
 完成本意图后用一句话总结你做了什么、写回了哪些事实。`

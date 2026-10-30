@@ -41,6 +41,7 @@ func (s *Server) kbParseReportFile(w http.ResponseWriter, r *http.Request) {
 		entries []db.KBEntry
 		chunks  int
 		used    bool
+		llmErrs []string
 	)
 	budget := maxReportUploadBytes
 	for _, fh := range files {
@@ -65,9 +66,12 @@ func (s *Server) kbParseReportFile(w http.ResponseWriter, r *http.Request) {
 		}
 		parts := kb.SplitReportIntoChunks(md, 6000)
 		chunks += len(parts)
-		got, llm := kb.DistillReportChunks(ctx, parts, formUseLLM(r), s.completeDistill)
+		got, llm, llmErr := kb.DistillReportChunks(ctx, parts, formUseLLM(r), s.completeDistill)
 		if llm {
 			used = true
+		}
+		if llmErr != "" {
+			llmErrs = append(llmErrs, llmErr)
 		}
 		entries = append(entries, got...)
 	}
@@ -83,6 +87,7 @@ func (s *Server) kbParseReportFile(w http.ResponseWriter, r *http.Request) {
 		"format":          reportFormat(formats),
 		"chunk_count":     chunks,
 		"used_llm":        used,
+		"llm_error":       joinLLMErr(llmErrs),
 		"entries":         entries,
 	})
 }
@@ -115,6 +120,20 @@ func formUseLLM(r *http.Request) bool {
 	default:
 		return true
 	}
+}
+
+func joinLLMErr(errs []string) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, err := range errs {
+		err = strings.TrimSpace(err)
+		if err == "" || seen[err] {
+			continue
+		}
+		seen[err] = true
+		out = append(out, err)
+	}
+	return strings.Join(out, "；")
 }
 
 func reportFormat(formats []string) string {

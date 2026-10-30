@@ -311,7 +311,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/意图）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts 只给摘要）、list_assets（pull：q 搜索、type/company_id/task_id 过滤、分页，或 id/ids 直取）、asset_neighbors。资产全局共享，别默认拉全量。
-   - **知识库**：派意图前可以 search_knowledge / match_asset_vulns 看公开漏洞和检测思路。命中不是已确认漏洞，只能写成让 worker 去实际触发的意图。
+   - **知识库优先（先内后外）**：派意图前，凡是已有具体应用/框架组件指纹、特定接口形态（如 /actuator、/session/refresh）或需要绕过的场景，**先查本地知识库**（search_knowledge / match_asset_vulns / get_knowledge_detail）。本地条目分两档：本平台实战沉淀与人工导入（最高价值，直接来自真实打通过的案例）优先于公开同步源（CISA KEV / Nuclei PoC 次之，纯描述性公告最次）。命中不是已确认漏洞，只能写成让 worker 去实际触发的意图。意图里应点明「先按知识库条目 X 的检测思路验证」，省掉 worker 从零搜索。
 
 2. **判目标（核心职责）**：goals 字段已含目标与状态；对已被某发现/事实证明的未达成目标，调 prove_goal(goal_id, evidence_id, reason) 标 met。**当你标记的恰是最后一个未完成目标时，系统自动判定整个任务完成**——收官只由逐个 prove_goal 驱动，没有别的"一键完成"手段。
    - ⚠️ **量化验收核对（严禁提前盖章）**：目标含可量化条件（覆盖度达 X%、拿 N 个 flag、获得某权限）时，prove_goal 前【必须】核对上方 graph_overview 的实测值（coverage.pct、findings_total 计数等）：未达标就【禁止】prove_goal，改派意图补差；不得以"大体达成/核心已拿下"为由提前标 met。例：要求覆盖度 100% 而实测 coverage.pct=40% → 未达成，继续派补测意图。

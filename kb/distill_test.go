@@ -105,3 +105,24 @@ func TestBuildFallbackDistillFields(t *testing.T) {
 		t.Fatalf("offline = %+v", offline)
 	}
 }
+
+func TestRedactCloudOrgAndProxy(t *testing.T) {
+	in := strings.Join([]string{
+		"ak LTAIk86eVH7vSshO",
+		"corp ding5ac93f66828c8f3835c2f4657eb6378f",
+		"proxy socks5h://host.docker.internal:7890",
+		"jump host.docker.internal",
+		`user_name="陈承坤"`,
+		"organ_simple_name=浙江省肿瘤医院",
+		"目标 浙江省肿瘤医院 门诊",
+	}, "\n")
+	got := RedactSensitive(in)
+	for _, leaked := range []string{"LTAIk86eVH7vSshO", "ding5ac93f66828c8f3835c2f4657eb6378f", "host.docker.internal", "陈承坤", "浙江省肿瘤医院", "socks5h://"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("leaked %q in %s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "<cloud-ak>") || !strings.Contains(got, "<corp-id>") || !strings.Contains(got, "<proxy-url>") || !strings.Contains(got, "<org-name>") || !strings.Contains(got, `user_name="<redacted>"`) {
+		t.Fatalf("placeholders missing: %s", got)
+	}
+}

@@ -881,10 +881,16 @@ function acceptReportFiles(list: FileList | File[] | null): File[] {
   return Array.from(list).filter((file) => REPORT_EXTS.some((ext) => file.name.toLowerCase().endsWith(ext)));
 }
 
+function draftWorthSelecting(entry: KBEntry): boolean {
+  const poc = entry.poc_snippet?.trim() ?? "";
+  const guide = entry.detection_guide?.trim() ?? "";
+  return poc.length > 0 || guide.length >= 60;
+}
+
 function draftsFrom(entries: KBReportParseResp["entries"]): ReportDraft[] {
   return (entries ?? []).map((entry, index) => ({
     id: `${entry.nkey || "draft"}-${index}`,
-    selected: true,
+    selected: draftWorthSelecting(entry),
     open: false,
     entry: {
       ...entry,
@@ -910,6 +916,7 @@ function ImportDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
   const [importing, setImporting] = React.useState(false);
   const [parsed, setParsed] = React.useState(false);
   const [parsedNames, setParsedNames] = React.useState("");
+  const [llmNotice, setLlmNotice] = React.useState("");
   const [drafts, setDrafts] = React.useState<ReportDraft[]>([]);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -922,6 +929,7 @@ function ImportDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
     setImporting(false);
     setParsed(false);
     setParsedNames("");
+    setLlmNotice("");
     setDrafts([]);
     setDragOver(false);
   }, [open]);
@@ -955,6 +963,7 @@ function ImportDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
     try {
       const res = await api.parseKBReportFiles(files, useLLM);
       const next = draftsFrom(res.entries);
+      setLlmNotice(useLLM && !res.used_llm ? res.llm_error || "未配置可用 LLM 或调用超时，已降级为章节规则提取" : "");
       setDrafts(next);
       setParsedNames((res.files_processed ?? files.map((file) => file.name)).join("、") || files.map((file) => file.name).join("、"));
       setParsed(true);
@@ -1030,6 +1039,11 @@ function ImportDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
           <TabsContent value="upload" className="mt-3">
             {parsed ? (
               <div id="kb-report-preview" className="space-y-3">
+                {llmNotice && (
+                  <div id="kb-report-llm-notice" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+                    {llmNotice}
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm">
                     已从《{parsedNames}》中拆解出 {drafts.length} 条候选知识条目（已选 {selectedCount} 条）
@@ -1050,6 +1064,7 @@ function ImportDialog({ open, onClose, onDone }: { open: boolean; onClose: () =>
                         setDrafts([]);
                         setFiles([]);
                         setParsedNames("");
+                        setLlmNotice("");
                       }}
                     >
                       重新上传
@@ -1185,6 +1200,7 @@ function ReportDraftCard({
           <Badge variant="outline">信息</Badge>
         )}
         <span className="text-xs text-muted-foreground">{reportKindLabel(draft.entry.kind)}</span>
+        {draft.entry.poc_snippet?.trim() && <Badge variant="outline">含 PoC</Badge>}
         <div className="min-w-0 flex-1">
           <div className="font-medium">{draft.entry.title}</div>
           {products.length > 0 && (
@@ -1197,6 +1213,9 @@ function ReportDraftCard({
             </div>
           )}
           {draft.entry.summary && <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{draft.entry.summary}</p>}
+          {draft.entry.poc_snippet?.trim() && (
+            <pre className="mt-2 max-h-24 overflow-auto rounded-md bg-muted px-2 py-1 font-mono text-xs whitespace-pre-wrap">{draft.entry.poc_snippet}</pre>
+          )}
         </div>
         <Button type="button" size="sm" variant="ghost" onClick={onOpen}>
           {draft.open ? "收起" : "展开编辑"}
@@ -1284,6 +1303,7 @@ function SourcesPanel() {
   const [sources, setSources] = React.useState<KBSource[]>([]);
   const [runs, setRuns] = React.useState<KBSyncRun[]>([]);
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [purging, setPurging] = React.useState(false);
 
   const load = React.useCallback(() => {
     api
@@ -1300,13 +1320,29 @@ function SourcesPanel() {
     load();
   }, [load]);
 
+  const purgeHollow = async () => {
+    setPurging(true);
+    try {
+      const res = await api.kbPurgeHollow();
+      toast.success(res.purged_count > 0 ? `已物理删除 ${res.purged_count} 条无 PoC 空壳条目` : "没有需要清理的空壳条目");
+      load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setPurging(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <Card className="gap-0 overflow-hidden py-0">
         <CardHeader className="border-b py-4">
           <CardTitle className="text-base">情报源</CardTitle>
-          <CardDescription>启用后按周期同步。内置源不能删除。</CardDescription>
-          <CardAction>
+          <CardDescription>启用后按周期同步。内置源不能删除。NVD / GHSA / AVD 只富化已有条目，不新增 CVE。</CardDescription>
+          <CardAction className="flex items-center gap-2">
+            <Button size="sm" variant="outline" disabled={purging} onClick={() => void purgeHollow()}>
+              {purging ? "清理中..." : "清理无 PoC 空壳条目"}
+            </Button>
             <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
               添加自定义源
             </Button>
@@ -1337,7 +1373,7 @@ function SourcesPanel() {
               <TableRow>
                 <TableHead className="w-[18%]">源</TableHead>
                 <TableHead>状态</TableHead>
-                <TableHead>拉取 / 新增 / 合并</TableHead>
+                <TableHead>拉取 / 新增 / 合并 / 跳过</TableHead>
                 <TableHead>耗时</TableHead>
                 <TableHead>错误</TableHead>
               </TableRow>
@@ -1354,7 +1390,7 @@ function SourcesPanel() {
                     <SyncStatusBadge status={run.status} />
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {run.fetched_count} / {run.upserted_count} / {run.merged_count}
+                    {run.fetched_count} / {run.upserted_count} / {run.merged_count} / {run.skipped_count ?? 0}
                   </TableCell>
                   <TableCell className="text-xs tabular-nums">{runDuration(run)}</TableCell>
                   <TableCell className="overflow-hidden text-destructive text-xs" title={run.error}>
@@ -1445,9 +1481,11 @@ function SourceCard({ src, onChanged }: { src: KBSource; onChanged: () => void }
             <Badge variant="outline">{SOURCE_KIND[src.kind] || src.kind}</Badge>
             <SyncStatusBadge status={src.last_status} />
             {src.builtin && <Badge variant="secondary">内置</Badge>}
+            {src.enrich_only && <Badge variant="outline">仅富化</Badge>}
           </div>
           <p className="mt-1 truncate text-muted-foreground text-xs" title={src.last_error || undefined}>
             <span className="tabular-nums">{src.entry_count} 条</span>
+            {src.enrich_only ? <span> · 只补全已有条目，不新增 CVE</span> : null}
             {src.last_error ? <span className="text-destructive"> · {src.last_error}</span> : null}
           </p>
         </div>

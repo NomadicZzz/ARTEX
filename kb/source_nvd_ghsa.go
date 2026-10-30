@@ -185,7 +185,7 @@ func ParseNVD(body []byte, sourceKey, minSeverity string) ([]Draft, int, error) 
 			CPE:            cpes,
 			Title:          id,
 			Summary:        summary,
-			DetectionGuide: "NVD 描述只说明公开影响面。检测需在授权资产上按受影响版本实际触发，版本匹配本身不能记为漏洞。",
+			DetectionGuide: GuideNVD,
 			References:     refs,
 			PublishedAt:    parseTimeFlexible(cve.Published),
 		})
@@ -361,7 +361,7 @@ func ParseGHSA(body []byte, sourceKey string) ([]Draft, error) {
 			Products:       products,
 			Title:          title,
 			Summary:        clip(desc, 2000),
-			DetectionGuide: "GHSA 只提供公开公告。按受影响包与版本做授权检测，公告命中不能代替实际触发。",
+			DetectionGuide: GuideGHSA,
 			References:     refs,
 			PublishedAt:    parseTimeFlexible(published),
 		})

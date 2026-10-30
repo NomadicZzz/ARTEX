@@ -237,9 +237,9 @@ func (d *DB) StartKBSyncRun(sourceID int64, trigger string) (int64, error) {
 	return id, err
 }
 
-func (d *DB) FinishKBSyncRun(id int64, status string, fetched, upserted, merged int, errText string) error {
-	_, err := d.Exec(`UPDATE kb_sync_runs SET status=$1, fetched_count=$2, upserted_count=$3, merged_count=$4, error=$5, finished_at=now() WHERE id=$6`,
-		status, fetched, upserted, merged, truncateRunes(errText, 2000), id)
+func (d *DB) FinishKBSyncRun(id int64, status string, fetched, upserted, merged, skipped int, errText string) error {
+	_, err := d.Exec(`UPDATE kb_sync_runs SET status=$1, fetched_count=$2, upserted_count=$3, merged_count=$4, skipped_count=$5, error=$6, finished_at=now() WHERE id=$7`,
+		status, fetched, upserted, merged, skipped, truncateRunes(errText, 2000), id)
 	return err
 }
 
@@ -247,7 +247,7 @@ func (d *DB) ListKBSyncRuns(sourceID int64, limit int) ([]KBSyncRun, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	q := `SELECT r.id, r.source_id, s.key, r.trigger_type, r.status, r.fetched_count, r.upserted_count, r.merged_count, r.error, r.started_at, r.finished_at
+	q := `SELECT r.id, r.source_id, s.key, r.trigger_type, r.status, r.fetched_count, r.upserted_count, r.merged_count, r.skipped_count, r.error, r.started_at, r.finished_at
 		FROM kb_sync_runs r JOIN kb_sources s ON s.id = r.source_id`
 	var args []any
 	if sourceID > 0 {
@@ -265,7 +265,7 @@ func (d *DB) ListKBSyncRuns(sourceID int64, limit int) ([]KBSyncRun, error) {
 	for rows.Next() {
 		var r KBSyncRun
 		var finished sql.NullTime
-		if err := rows.Scan(&r.ID, &r.SourceID, &r.SourceKey, &r.TriggerType, &r.Status, &r.FetchedCount, &r.UpsertedCount, &r.MergedCount, &r.Error, &r.StartedAt, &finished); err != nil {
+		if err := rows.Scan(&r.ID, &r.SourceID, &r.SourceKey, &r.TriggerType, &r.Status, &r.FetchedCount, &r.UpsertedCount, &r.MergedCount, &r.SkippedCount, &r.Error, &r.StartedAt, &finished); err != nil {
 			return nil, err
 		}
 		if finished.Valid {
@@ -428,25 +428,52 @@ func assetHitLabel(typ, domain, url, ip, app, service, method string) string {
 	}
 }
 
-// MatchAssetsAgainstKB returns high or actively exploited entries for each asset fingerprint.
+// kbTierExpr ranks an entry's provenance. Tier 0 is what this platform actually
+// saw work — a distilled finding, or a human/agent write. Everything else came
+// from a public feed and is only a lead.
+const kbTierExpr = `(CASE WHEN e.origin IN ('finding_distilled', 'manual', 'agent')
+	OR COALESCE(e.source_keys, ARRAY[]::text[]) @> ARRAY['finding_distilled']::text[]
+	THEN 1 ELSE 0 END)`
+
+// kbTierOrder is the shared ORDER BY prefix: internal experience first, then
+// known-exploited, then entries that carry a PoC, then severity.
+const kbTierOrder = kbTierExpr + ` DESC,
+	e.actively_exploited DESC,
+	(CASE WHEN COALESCE(BTRIM(e.poc_snippet), '') <> '' THEN 1 ELSE 0 END) DESC,
+	CASE lower(e.severity) WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 WHEN 'info' THEN 1 ELSE 0 END DESC`
+
+// kbHighSignal projects only the columns kb_hints needs.
+const kbHighSignal = `id, nkey, external_id, title, severity, actively_exploited,
+	(COALESCE(BTRIM(poc_snippet), '') <> '') , ` + kbTierExpr + `, array_to_json(products)::text`
+
+// kbMatchLimit caps the candidate pool pulled for one collision pass.
+const kbMatchLimit = 200
+
+// MatchAssetsAgainstKB returns the entries worth surfacing next to each asset.
+//
+// A specific component token (fastjson, nacos, weaver-ecology) collides with
+// anything high-signal: internal experience, a KEV row, or a row with a PoC. A
+// bare stack foundation (nginx, java, mysql) only collides with internal
+// experience, so identifying "nginx" never drags in forty old public CVEs.
 // HighVulnCount is the full hit count; TopEntries is capped at limitPer.
 func (d *DB) MatchAssetsAgainstKB(assets []KBFingerprint, limitPer int) ([]KBAssetMatch, error) {
 	if limitPer <= 0 {
 		limitPer = 3
 	}
 	type fp struct {
-		id     int64
-		tokens []string
+		id       int64
+		specific []string
+		broad    []string
 	}
 	var items []fp
 	union := map[string]bool{}
 	for _, a := range assets {
-		toks := NormalizeProducts(a.Techs)
-		if len(toks) == 0 {
+		specific, broad := SplitSpecificAndBroadProducts(a.Techs)
+		if len(specific) == 0 && len(broad) == 0 {
 			continue
 		}
-		items = append(items, fp{id: a.ID, tokens: toks})
-		for _, t := range toks {
+		items = append(items, fp{id: a.ID, specific: specific, broad: broad})
+		for _, t := range append(append([]string{}, specific...), broad...) {
 			union[t] = true
 		}
 	}
@@ -457,53 +484,51 @@ func (d *DB) MatchAssetsAgainstKB(assets []KBFingerprint, limitPer int) ([]KBAss
 	for k := range union {
 		keys = append(keys, k)
 	}
-	rows, err := d.Query(`SELECT id, nkey, external_id, title, severity, actively_exploited, (poc_snippet <> '') , array_to_json(products)::text
-		FROM kb_entries
-		WHERE enabled AND products && $1::text[]
-		  AND (severity IN ('critical','high') OR actively_exploited)
-		ORDER BY actively_exploited DESC, (poc_snippet <> '') DESC,
-			CASE lower(severity) WHEN 'critical' THEN 5 WHEN 'high' THEN 4 ELSE 0 END DESC, id DESC
-		LIMIT 200`, pgTextArray(keys))
+	rows, err := d.Query(`SELECT `+kbHighSignal+`
+		FROM kb_entries e
+		WHERE e.enabled AND e.products && $1::text[]
+		ORDER BY `+kbTierOrder+`, e.id DESC
+		LIMIT $2`, pgTextArray(keys), kbMatchLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	type row struct {
-		e        KBEntry
-		products []string
+	type foundRow struct {
+		e           KBEntry
+		products    []string
+		internal    bool
 	}
-	var found []row
+	var found []foundRow
 	for rows.Next() {
 		var e KBEntry
 		var products string
-		if err := rows.Scan(&e.ID, &e.NKey, &e.ExternalID, &e.Title, &e.Severity, &e.ActivelyExploited, &e.HasPoC, &products); err != nil {
+		var internal bool
+		if err := rows.Scan(&e.ID, &e.NKey, &e.ExternalID, &e.Title, &e.Severity,
+			&e.ActivelyExploited, &e.HasPoC, &internal, &products); err != nil {
 			return nil, err
 		}
 		ps := decodeJSONStrings(products)
 		e.Products = ps
-		found = append(found, row{e: e, products: ps})
+		found = append(found, foundRow{e: e, products: ps, internal: internal})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	var out []KBAssetMatch
 	for _, it := range items {
-		set := map[string]bool{}
-		for _, t := range it.tokens {
-			set[t] = true
+		specific := map[string]bool{}
+		for _, t := range it.specific {
+			specific[t] = true
+		}
+		broad := map[string]bool{}
+		for _, t := range it.broad {
+			broad[t] = true
 		}
 		var matched []string
 		var tops []KBEntry
 		hits := 0
 		for _, f := range found {
-			hit := false
-			var local []string
-			for _, p := range f.products {
-				if set[p] {
-					hit = true
-					local = append(local, p)
-				}
-			}
+			hit, local := matchRow(f.products, f.e, f.internal, specific, broad)
 			if !hit {
 				continue
 			}
@@ -519,6 +544,25 @@ func (d *DB) MatchAssetsAgainstKB(assets []KBFingerprint, limitPer int) ([]KBAss
 		out = append(out, KBAssetMatch{AssetID: it.id, MatchedTech: matched, HighVulnCount: hits, TopEntries: tops})
 	}
 	return out, nil
+}
+
+// matchRow decides whether one candidate is worth showing for an asset, and which
+// of its products caused the hit.
+func matchRow(products []string, e KBEntry, internal bool, specific, broad map[string]bool) (bool, []string) {
+	var local []string
+	hit := false
+	for _, p := range products {
+		switch {
+		case specific[p] && (internal || e.ActivelyExploited || e.HasPoC):
+			hit = true
+		case broad[p] && internal:
+			hit = true
+		default:
+			continue
+		}
+		local = append(local, p)
+	}
+	return hit, local
 }
 
 // KBFindingRef is a finding that cites a knowledge entry.

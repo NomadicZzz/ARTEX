@@ -537,6 +537,8 @@ export interface KBSource {
   last_error: string;
   entry_count: number;
   builtin: boolean;
+  /** 纯富化源：只补全已有条目，不会新增 CVE。 */
+  enrich_only?: boolean;
 }
 
 export interface KBSyncRun {
@@ -548,6 +550,7 @@ export interface KBSyncRun {
   fetched_count: number;
   upserted_count: number;
   merged_count: number;
+  skipped_count?: number;
   error: string;
   started_at: string;
   finished_at?: string;
@@ -567,6 +570,7 @@ export interface KBReportParseResp {
   format: string;
   chunk_count: number;
   used_llm: boolean;
+  llm_error?: string;
   entries: KBEntry[] | null;
 }
 

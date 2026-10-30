@@ -147,7 +147,7 @@ func ParseAVDDetail(body []byte, id, sourceKey string) (Draft, bool) {
 		Severity:       "high",
 		Title:          clip(title, 300),
 		Summary:        clip(summary, 1500),
-		DetectionGuide: "阿里云 AVD 页面只提供公开线索。需要在授权资产上按受影响版本实际触发后才能记为漏洞。",
+		DetectionGuide: GuideAVD,
 		References:     []db.KBReference{{URL: "https://avd.aliyun.com/detail?id=" + id, Title: id}},
 		Products:       avdProducts(title),
 	}, title != "" || ext != ""

@@ -73,7 +73,7 @@ func ParseFeed(body []byte, sourceKey string) ([]Draft, error) {
 			Severity:       "info",
 			Title:          title,
 			Summary:        clip(summary, 1500),
-			DetectionGuide: "RSS/公告只提供背景。检测思路需结合受影响产品在授权范围内验证，文章本身不是漏洞证据。",
+			DetectionGuide: GuideFeed,
 			References:     refs,
 			PublishedAt:    parseTimeFlexible(item.PubDate),
 		})
@@ -113,7 +113,7 @@ func ParseFeed(body []byte, sourceKey string) ([]Draft, error) {
 			Severity:       "info",
 			Title:          title,
 			Summary:        clip(summary, 1500),
-			DetectionGuide: "RSS/公告只提供背景。检测思路需结合受影响产品在授权范围内验证，文章本身不是漏洞证据。",
+			DetectionGuide: GuideFeed,
 			References:     refs,
 			PublishedAt:    parseTimeFlexible(entry.Updated),
 		})

@@ -1385,6 +1385,7 @@ export const api = {
     put<KBSource>(`/kb/sources/${id}`, body),
   kbDeleteSource: (id: number) => del<{ ok: boolean }>(`/kb/sources/${id}`),
   kbSyncSource: (id: number) => post<{ status: string }>(`/kb/sources/${id}/sync`),
+  kbPurgeHollow: () => post<{ purged_count: number }>("/kb/purge-hollow"),
   kbSyncRuns: (sourceId?: number) =>
     get<{ runs: KBSyncRun[] | null }>(`/kb/sync-runs${sourceId ? `?source_id=${sourceId}` : ""}`),
   distillFindingPreview: (id: string, body?: { extra_notes?: string; target_kb_id?: number }) =>

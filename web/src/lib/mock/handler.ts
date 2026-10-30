@@ -1140,6 +1140,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       format: "docx",
       chunk_count: 2,
       used_llm: false,
+      llm_error: "未配置可用 LLM 或调用超时，已降级为章节规则提取",
       entries: [
         {
           id: 0,
@@ -1218,9 +1219,26 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
           entry_count: 1,
           builtin: true,
         },
+        {
+          id: 2,
+          key: "nvd_cve",
+          name: "NVD CVE API 2.0",
+          kind: "nvd",
+          enabled: true,
+          sync_interval_sec: 21600,
+          config: { min_severity: "high", since_days: 120 },
+          api_key_set: false,
+          cursor: "",
+          last_status: "ok",
+          last_error: "",
+          entry_count: 0,
+          builtin: true,
+          enrich_only: true,
+        },
       ],
     };
   }
+  if (path === "/kb/purge-hollow" && m === "POST") return { purged_count: 12 };
   if (seg[0] === "kb" && seg[1] === "sources" && seg[3] === "sync" && m === "POST") return { status: "started" };
   if (seg[0] === "kb" && seg[1] === "sources" && seg[2] && m === "PUT") return { id: Number(seg[2]), ...(b as object) };
   if (seg[0] === "kb" && seg[1] === "sources" && seg[2] && m === "DELETE") return { ok: true };

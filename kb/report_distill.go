@@ -17,9 +17,20 @@ const (
 	maxReportChunks         = 8
 )
 
-// DistillReportSystem asks the model to turn one redacted report chapter into
-// reusable knowledge entries. CVE sync and finding distillation keep their own prompts.
-const DistillReportSystem = `你是安全研究与知识库构建专家。输入材料是从一份已脱敏的渗透测试报告或安全研究文档中提取的章节。请从中识别出所有具体的【漏洞检测方法/PoC】或【通用安全评估方法论/Checklist】，将它们泛化为脱离特定目标客户的可复用知识库条目。忽略纯行政描述或无实质技术细节的汇总表。只输出一个 JSON 数组 ` + "`[...]`" + `，每个元素包含：` + "`" + `{"title":"通用化标题（包含组件名与漏洞类型，不含客户名）","kind":"poc|methodology|checklist","vulnclass":"rce|sqli|xss|ssrf|auth_bypass|idor|file_upload|info_leak|...","severity":"critical|high|medium|low|info","products":["受影响组件/框架标准名"],"tags":["标签"],"affected_versions":"受影响版本范围（如有）","external_id":"CVE-YYYY-NNNN（如有）","summary":"一两句核心原理与利用前提摘要","detection_guide":"分步骤说明如何在授权目标上识别特征、构造验证请求及判断漏洞存在","poc_snippet":"脱敏后的通用 HTTP 请求模板与预期响应特征（如有）","remediation":"修复与加固建议"}` + "`" + `。严禁编造材料中未提及的攻击步骤，所有具体域名/IP/口令一律用 ` + "`<target-host>`" + `、` + "`<ip>`" + `、` + "`<redacted>`" + ` 占位。`
+// DistillReportSystem asks the model for one component PoC and, when the chapter
+// supports it, one reusable methodology. CVE sync and finding distillation keep
+// their own prompts.
+const DistillReportSystem = `你是资深安全研究员与渗透测试知识库架构师。输入材料是从一份已脱敏的渗透测试报告中提取的漏洞章节。
+请将报告中的实战成果提炼为高复用价值的知识库条目，重点聚焦【可直接复用的组件 PoC】与【可迁移的漏洞挖掘经验/方法论】。
+
+提炼原则：
+1. 严禁把“报告摘要”、“影响与危害”、“证据罗列”、“受影响范围表”单独拆成碎片条目。同一个漏洞的所有上下文必须整合提炼。
+2. 针对每个具体的漏洞实例，请按以下两个维度提炼（每个漏洞最多产出 1~2 条）：
+   - 维度 A【组件专属 PoC 条目 (kind = "poc")】：当报告包含特定产品/组件/微服务的具体漏洞路径与请求报文时，提取其组件指纹、请求构造特征、关键 Header/Body 信封格式及判断依据，填入 poc_snippet 与 detection_guide。
+   - 维度 B【通用挖掘经验/方法论条目 (kind = "methodology")】：当报告的“根因分析”或“复现过程”体现了具有普适性的攻击思路、认证绕过模式、参数构造技巧或网关反代绕过经验时，剥离具体目标厂商名称，将其抽象为跨系统通用的实战排查方法论。
+3. 彻底抹除客户单位名称、真实人名、私有域名、IP、真实 session_id/corp_id，统一使用 <target-host>、<ip>、<corp-id>、<session-id> 占位。
+4. 只输出合法的 JSON 数组，不要包裹 Markdown 代码块。数组每个元素严格包含以下字段：
+[{"title":"精准的技术标题（不含客户名）","kind":"poc 或 methodology 或 checklist","vulnclass":"auth_bypass | rce | sqli | xss | ssrf | idor | info_leak | file_upload | logic","severity":"critical | high | medium | low | info","products":["小写标准组件名"],"tags":["小写技术标签"],"affected_versions":"受影响版本或组件栈说明","summary":"150字以内的核心原理、利用前提与挖掘切入点摘要","detection_guide":"结构化的实战探测与挖掘步骤","poc_snippet":"脱敏后的关键 HTTP 原始请求报文或最小化验证代码片段","remediation":"精炼的研发代码级与网关级修复建议"}]`
 
 var (
 	httpStartLine = regexp.MustCompile(`(?i)^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE)\s+\S+\s+HTTP/1\.[01]\b`)
@@ -27,28 +38,52 @@ var (
 	cnOrdRe       = regexp.MustCompile(`^([一二三四五六七八九十百]+)、\s*(.*)$`)
 	cnParenRe     = regexp.MustCompile(`^[（(]([一二三四五六七八九十]+)[）)]\s*(.*)$`)
 	numHeadRe     = regexp.MustCompile(`^(\d+\.\d+(?:\.\d+)*)\s+(\S.*)$`)
-	plainNumRe    = regexp.MustCompile(`^(\d+)[、.．]\s+(\S.*)$`)
 	vulnHeadRe    = regexp.MustCompile(`^漏洞\s*([0-9一二三四五六七八九十]+)\s*[:：]\s*(.*)$`)
 	leadEnumRe    = regexp.MustCompile(`^(?:[一二三四五六七八九十百]+、|[（(][一二三四五六七八九十]+[）)]|\d+(?:\.\d+)*[、.．]?)\s*`)
 	fenceBodyRe   = regexp.MustCompile("(?s)```[a-zA-Z0-9_-]*\\n(.*?)```")
 	httpBlockRe   = regexp.MustCompile(`(?is)(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE)\s+\S+\s+HTTP/1\.[01][^\n]*(?:\n[^\n]+){0,40}`)
-	remediationRe = regexp.MustCompile(`(?s)(?:^|\n)[ \t]*#{0,4}[ \t]*(?:修复建议|整改建议)[ \t]*[:：]?[ \t]*\n?(.*)`)
+	remediationRe = regexp.MustCompile(`(?s)(?:^|\n)[ \t]*#{0,4}[ \t]*(?:修复建议|整改建议|防护建议|解决方案|加固建议)[ \t]*[:：]?[ \t]*\n?(.*)`)
 	sevLabelRe    = regexp.MustCompile(`(?:风险等级|严重程度|危害等级)\s*[:：]\s*(严重|高危|中危|低危|critical|high|medium|low|info)`)
+	bracketSevRe  = regexp.MustCompile(`(?i)\[(critical|high|medium|low|info|严重|高危|中危|低危)\]`)
 	sevWordRe     = regexp.MustCompile(`严重|高危|中危|低危`)
+	subItemRe     = regexp.MustCompile(`^(?:[A-Z]|[0-9]{1,2})[.、．]\s+\S`)
+	newVulnMarkRe = regexp.MustCompile(`(?i)\[(critical|high|medium|low|严重|高危|中危|低危)\]`)
+	taskLineRe    = regexp.MustCompile(`(?m)^[ \t]*[-*][ \t]*(?:\*\*)?所属任务(?:\*\*)?[^\n]*$`)
 )
 
 var noiseTitles = map[string]bool{
-	"目录":     true,
-	"保密声明":   true,
-	"免责声明":   true,
-	"文档修订记录": true,
-	"测试人员":   true,
-	"评估范围":   true,
-	"风险等级定义": true,
-	"概述":     true,
-	"资产列表":   true,
-	"评估概述":   true,
-	"人员名单":   true,
+	"目录":       true,
+	"保密声明":     true,
+	"免责声明":     true,
+	"文档修订记录":   true,
+	"测试人员":     true,
+	"评估范围":     true,
+	"风险等级定义":   true,
+	"概述":       true,
+	"资产列表":     true,
+	"评估概述":     true,
+	"人员名单":     true,
+	"声明":       true,
+	"附录":       true,
+	"漏洞发现汇总报告": true,
+	"汇总报告":     true,
+	"摘要":       true,
+	"报告摘要":     true,
+	"执行摘要":     true,
+	"漏洞明细":     true,
+	"发现明细":     true,
+	"风险汇总":     true,
+}
+
+var vulnSubHeadings = map[string]bool{
+	"概述": true, "漏洞概述": true, "漏洞描述": true, "问题描述": true,
+	"影响与危害": true, "危害分析": true, "漏洞危害": true, "风险分析": true,
+	"受影响范围": true, "影响范围": true, "受影响资产": true,
+	"复现步骤": true, "漏洞复现": true, "测试步骤": true, "验证步骤": true, "攻击过程": true,
+	"证据": true, "漏洞证据": true, "测试证据": true, "截图与证据": true,
+	"poc": true, "exp": true, "验证脚本": true, "请求报文": true,
+	"根因分析": true, "漏洞成因": true, "成因分析": true, "原理分析": true,
+	"修复建议": true, "整改建议": true, "防护建议": true, "解决方案": true, "加固建议": true,
 }
 
 // SplitReportIntoChunks redacts the report, drops administrative chapters, and
@@ -121,6 +156,7 @@ func SplitReportIntoChunks(rawMD string, maxChunkRunes int) []string {
 // RedactSensitive writes URL hosts as <host>. This pipeline rewrites that to
 // <target-host> so report drafts match the placeholder used in HTTP Host lines.
 func redactReportText(s string) string {
+	s = taskLineRe.ReplaceAllString(s, "")
 	s = redactFencedHTTP(s)
 	s = redactBareHTTP(s)
 	s = RedactSensitive(s)
@@ -235,6 +271,7 @@ func splitReportSections(md string) []reportSection {
 	var body []string
 	inFence := false
 	started := false
+	inVuln := false
 	flush := func() {
 		sections = append(sections, reportSection{title: title, body: strings.TrimSpace(strings.Join(body, "\n"))})
 	}
@@ -246,13 +283,18 @@ func splitReportSections(md string) []reportSection {
 			continue
 		}
 		if !inFence {
-			if t, ok := matchSectionHeading(line); ok {
+			if t, level, ok := matchSectionHeading(line); ok {
+				if inVuln && isSubSectionTitle(t, level) {
+					body = append(body, "### "+t)
+					continue
+				}
 				if started || strings.TrimSpace(strings.Join(body, "\n")) != "" {
 					flush()
 				}
 				title = t
 				body = nil
 				started = true
+				inVuln = !isNoiseTitle(t)
 				continue
 			}
 		}
@@ -264,36 +306,46 @@ func splitReportSections(md string) []reportSection {
 	return sections
 }
 
-func matchSectionHeading(line string) (string, bool) {
+func matchSectionHeading(line string) (string, int, bool) {
 	if m := mdHeadRe.FindStringSubmatch(line); m != nil {
-		return strings.TrimSpace(m[2]), true
+		return strings.TrimSpace(m[2]), len(m[1]), true
 	}
 	trim := strings.TrimSpace(line)
 	if m := cnOrdRe.FindStringSubmatch(trim); m != nil {
 		if strings.TrimSpace(m[2]) == "" {
-			return strings.TrimSpace(m[1]), true
+			return strings.TrimSpace(m[1]), 1, true
 		}
-		return strings.TrimSpace(m[2]), true
+		return strings.TrimSpace(m[2]), 1, true
 	}
 	if m := cnParenRe.FindStringSubmatch(trim); m != nil {
 		if strings.TrimSpace(m[2]) == "" {
-			return strings.TrimSpace(m[1]), true
+			return strings.TrimSpace(m[1]), 1, true
 		}
-		return strings.TrimSpace(m[2]), true
+		return strings.TrimSpace(m[2]), 1, true
 	}
 	if m := vulnHeadRe.FindStringSubmatch(trim); m != nil {
 		if strings.TrimSpace(m[2]) == "" {
-			return strings.TrimSpace(trim), true
+			return strings.TrimSpace(trim), 1, true
 		}
-		return strings.TrimSpace(m[2]), true
+		return strings.TrimSpace(m[2]), 1, true
 	}
 	if m := numHeadRe.FindStringSubmatch(trim); m != nil {
-		return strings.TrimSpace(m[2]), true
+		return strings.TrimSpace(m[2]), 2, true
 	}
-	if m := plainNumRe.FindStringSubmatch(trim); m != nil {
-		return strings.TrimSpace(m[2]), true
+	return "", 0, false
+}
+
+// isSubSectionTitle reports headings that belong inside the current vulnerability:
+// named subsections such as 复现步骤, and deeper evidence items such as "### A. ..."
+// or "### 1. 未授权签发". A heading that carries its own severity mark starts a new vulnerability.
+func isSubSectionTitle(title string, level int) bool {
+	if newVulnMarkRe.MatchString(title) {
+		return false
 	}
-	return "", false
+	if vulnSubHeadings[strings.ToLower(canonicalNoiseTitle(title))] {
+		return true
+	}
+	return level >= 3 && subItemRe.MatchString(strings.TrimSpace(title))
 }
 
 func sectionText(sec reportSection) string {
@@ -378,39 +430,64 @@ type ReportLLM func(ctx context.Context, system, user string) (string, error)
 // DistillReportChunks turns redacted chunks into candidate entries.
 // usedLLM is true only when at least one chunk was parsed from the model.
 // A failed chunk falls back on its own and does not fail the whole report.
-func DistillReportChunks(ctx context.Context, chunks []string, useLLM bool, complete ReportLLM) ([]db.KBEntry, bool) {
+// llmErr is empty when the model was not requested or at least the failures
+// were not the reason for the draft. Callers show it when usedLLM is false.
+func DistillReportChunks(ctx context.Context, chunks []string, useLLM bool, complete ReportLLM) ([]db.KBEntry, bool, string) {
 	if len(chunks) == 0 {
-		return nil, false
+		return nil, false, ""
 	}
-	if !useLLM || complete == nil {
-		return DedupeReportEntries(FallbackExtractReportEntries(chunks)), false
+	if !useLLM {
+		return DedupeReportEntries(FallbackExtractReportEntries(chunks)), false, ""
+	}
+	if complete == nil {
+		return DedupeReportEntries(FallbackExtractReportEntries(chunks)), false, "当前未配置激活的 LLM 模型，已使用规则引擎按漏洞章节聚合提取"
 	}
 	var out []db.KBEntry
+	var errs []string
 	used := false
+	note := func(err error) {
+		if err == nil {
+			return
+		}
+		msg := "LLM 调用失败或超时，已自动回退为规则提取: " + clipRunes(strings.Join(strings.Fields(err.Error()), " "), 240)
+		for _, existing := range errs {
+			if existing == msg {
+				return
+			}
+		}
+		errs = append(errs, msg)
+	}
 	for _, chunk := range chunks {
 		if ctx.Err() != nil {
+			note(ctx.Err())
 			out = append(out, FallbackExtractReportEntries([]string{chunk})...)
 			continue
 		}
 		raw, err := complete(ctx, DistillReportSystem, chunk)
 		if err != nil {
+			note(err)
 			out = append(out, FallbackExtractReportEntries([]string{chunk})...)
 			continue
 		}
 		fields, err := ParseDistillArrayJSON(raw)
 		if err != nil || len(fields) == 0 {
+			if err == nil {
+				err = fmt.Errorf("没有可解析的知识条目")
+			}
+			note(err)
 			out = append(out, FallbackExtractReportEntries([]string{chunk})...)
 			continue
 		}
 		converted := fieldsToReportEntries(fields)
 		if len(converted) == 0 {
+			note(fmt.Errorf("没有可解析的知识条目"))
 			out = append(out, FallbackExtractReportEntries([]string{chunk})...)
 			continue
 		}
 		out = append(out, converted...)
 		used = true
 	}
-	return DedupeReportEntries(out), used
+	return DedupeReportEntries(out), used, strings.Join(errs, "；")
 }
 
 // ParseDistillArrayJSON accepts a JSON array or an object with an entries field.
@@ -490,6 +567,7 @@ func fieldsToReportEntries(fields []DistillFields) []db.KBEntry {
 			Distilled:        true,
 			Enabled:          true,
 		}
+		e.HasPoC = strings.TrimSpace(e.PocSnippet) != ""
 		if e.ExternalID != "" {
 			e.NKey = db.CanonicalNKey(e.ExternalID, e.Kind, e.Title, "")
 		}
@@ -543,7 +621,7 @@ func FallbackExtractReportEntries(chunks []string) []db.KBEntry {
 			title = clipRunes(body, 80)
 		}
 		rem := extractRemediation(body)
-		guide := body
+		guide := extractDetectionGuide(body)
 		poc := extractPoC(body)
 		kind := "methodology"
 		if poc != "" {
@@ -554,7 +632,7 @@ func FallbackExtractReportEntries(chunks []string) []db.KBEntry {
 		}
 		e := db.KBEntry{
 			Title:          title,
-			Summary:        clipRunes(firstProse(body, rem), 400),
+			Summary:        extractSummary(body, rem),
 			DetectionGuide: guide,
 			PocSnippet:     poc,
 			Remediation:    rem,
@@ -563,6 +641,7 @@ func FallbackExtractReportEntries(chunks []string) []db.KBEntry {
 			Origin:         "manual",
 			Distilled:      true,
 			Enabled:        true,
+			HasPoC:         poc != "",
 		}
 		out = append(out, e)
 	}
@@ -605,7 +684,76 @@ func extractRemediation(body string) string {
 	return clipRunes(text, 8000)
 }
 
+func extractSummary(body, remediation string) string {
+	for _, name := range []string{"概述", "漏洞概述", "漏洞描述", "问题描述"} {
+		if text := blockText(body, name); text != "" {
+			return clipRunes(firstParagraph(text), 400)
+		}
+	}
+	preamble := body
+	if i := strings.Index(preamble, "\n### "); i >= 0 {
+		preamble = preamble[:i]
+	}
+	preamble = firstParagraph(strings.TrimSpace(preamble))
+	if preamble == "" {
+		preamble = firstParagraph(firstProse(body, remediation))
+	}
+	return clipRunes(preamble, 400)
+}
+
+func extractDetectionGuide(body string) string {
+	var parts []string
+	for _, name := range []string{"复现步骤", "漏洞复现", "测试步骤", "验证步骤", "攻击过程", "根因分析", "漏洞成因", "成因分析", "原理分析"} {
+		if text := blockText(body, name); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) > 0 {
+		return clipRunes(strings.TrimSpace(strings.Join(parts, "\n\n")), 20000)
+	}
+	text := body
+	if i := strings.Index(text, "```"); i >= 0 {
+		text = text[:i]
+	}
+	if i := strings.Index(text, "修复建议"); i >= 0 {
+		text = text[:i]
+	}
+	return clipRunes(strings.TrimSpace(text), 20000)
+}
+
+func blockText(body, name string) string {
+	lines := strings.Split(body, "\n")
+	var buf []string
+	capturing := false
+	for _, line := range lines {
+		if t, _, ok := matchSectionHeading(line); ok && vulnSubHeadings[strings.ToLower(canonicalNoiseTitle(t))] {
+			if capturing {
+				break
+			}
+			if canonicalNoiseTitle(t) == name {
+				capturing = true
+			}
+			continue
+		}
+		if capturing {
+			buf = append(buf, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(buf, "\n"))
+}
+
+func firstParagraph(text string) string {
+	text = strings.TrimSpace(text)
+	if i := strings.Index(text, "\n\n"); i >= 0 {
+		return strings.TrimSpace(text[:i])
+	}
+	return text
+}
+
 func extractSeverity(text string) string {
+	if m := bracketSevRe.FindStringSubmatch(text); len(m) == 2 {
+		return mapSeverityWord(m[1])
+	}
 	if m := sevLabelRe.FindStringSubmatch(text); len(m) == 2 {
 		return mapSeverityWord(m[1])
 	}

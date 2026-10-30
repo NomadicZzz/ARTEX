@@ -16,12 +16,24 @@ var (
 	phoneRe = regexp.MustCompile(`\b1[3-9]\d{9}\b`)
 	// The optional quote covers JSON keys such as "password":"value".
 	secretRe = regexp.MustCompile(`(?i)(password|passwd|token|secret|api[_-]?key|authorization)(")?(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,"']+)`)
+	// Cloud access keys: Aliyun LTAI, Tencent AKID, AWS AKIA.
+	cloudAKRe = regexp.MustCompile(`\b(?:LTAI[A-Za-z0-9]{12,24}|AKID[A-Za-z0-9]{13,24}|AKIA[0-9A-Z]{16})\b`)
+	// DingTalk corp id, for example ding5ac93f66828c8f3835c2f4657eb6378f.
+	corpIDRe      = regexp.MustCompile(`\bding[0-9a-fA-F]{24,40}\b`)
+	proxyURLRe    = regexp.MustCompile(`(?i)\bsocks[45]h?://[^\s"'` + "`" + `<>]+`)
+	dockerHostRe  = regexp.MustCompile(`(?i)host\.docker\.internal`)
+	piiFieldRe    = regexp.MustCompile(`(?i)\b(user_name|real_name|employee_name|organ_simple_name|organ_show_name|corp_name)\s*([:=：]\s*"?)([^",\n\r}]+)("?)`)
+	cnOrgEntityRe = regexp.MustCompile(`[\p{Han}]{2,12}(?:肿瘤医院|人民医院|第一医院|中心医院|中医院|附属医院|妇幼保健院|银行股份有限公司|集团股份有限公司|政务服务局|大数据局)`)
 )
 
 // RedactSensitive masks hosts, IP addresses, emails, phone numbers, and common
 // secret assignments before a finding is sent to an LLM or stored as methodology text.
 // Placeholders already wrapped in angle brackets are left alone.
 func RedactSensitive(s string) string {
+	s = cloudAKRe.ReplaceAllString(s, "<cloud-ak>")
+	s = corpIDRe.ReplaceAllString(s, "<corp-id>")
+	s = proxyURLRe.ReplaceAllString(s, "<proxy-url>")
+	s = dockerHostRe.ReplaceAllString(s, "<proxy-url>")
 	s = urlHostRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := urlHostRe.FindStringSubmatch(m)
 		if len(sub) < 3 || strings.Contains(sub[2], "<") {
@@ -33,7 +45,9 @@ func RedactSensitive(s string) string {
 	s = ipv6Re.ReplaceAllString(s, "<ip>")
 	s = emailRe.ReplaceAllString(s, "<email>")
 	s = phoneRe.ReplaceAllString(s, "<phone>")
+	s = piiFieldRe.ReplaceAllString(s, `${1}${2}<redacted>${4}`)
 	s = secretRe.ReplaceAllString(s, `${1}${2}${3}<redacted>`)
+	s = cnOrgEntityRe.ReplaceAllString(s, "<org-name>")
 	return s
 }
 

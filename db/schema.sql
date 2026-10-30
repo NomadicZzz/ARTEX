@@ -1424,11 +1424,14 @@ CREATE TABLE IF NOT EXISTS kb_sync_runs (
     fetched_count  INTEGER NOT NULL DEFAULT 0,
     upserted_count INTEGER NOT NULL DEFAULT 0,
     merged_count   INTEGER NOT NULL DEFAULT 0,
+    skipped_count  INTEGER NOT NULL DEFAULT 0,
     error          TEXT NOT NULL DEFAULT '',
     started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at    TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_kb_sync_runs_source ON kb_sync_runs(source_id, id DESC);
+-- 旧库补列（同步时被"纯富化模式"跳过、未入库的条数）。
+ALTER TABLE kb_sync_runs ADD COLUMN IF NOT EXISTS skipped_count INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS kb_entries (
     id                  BIGSERIAL PRIMARY KEY,
