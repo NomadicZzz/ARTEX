@@ -43,7 +43,7 @@
 
 #### 新增的功能
 
-- **镜像改为 `nomadiczzz/artex`**：`docker-compose.yml` 与发布工作流同步改到本仓库命名空间，`ARTEX_TAG` 可指定版本。
+- **镜像改为 `mengnan649/artex`**：`docker-compose.yml` 与发布工作流同步改到该 Docker Hub 账号，`ARTEX_TAG` 可指定版本。
 - **页面「一键更新」指向本仓库 Release**：自更新源由上游改为 `NomadicZzz/ARTEX`，之后可直接从页面升级到本仓库发布的版本。
 
 ## [0.3.15] - 2026-10-07

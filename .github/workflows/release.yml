@@ -120,7 +120,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: nomadiczzz/artex
+          images: mengnan649/artex
           tags: |
             type=ref,event=tag
             type=raw,value=latest
